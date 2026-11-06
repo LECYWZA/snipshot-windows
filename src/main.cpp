@@ -16,6 +16,42 @@
 #include <QGuiApplication>
 #include <QCursor>
 #include <QDebug>
+#include <QFile>
+#include <QStandardPaths>
+#include <QMutex>
+#include <QtConcurrent/QtConcurrentRun>
+#include <QFutureWatcher>
+
+#ifdef Q_OS_WIN
+#  ifndef NOMINMAX
+#    define NOMINMAX
+#  endif
+#  include <windows.h>
+#endif
+
+// 无控制台（WIN32 子系统）时把日志落到 %LOCALAPPDATA%\SnipShot\snipshot.log，
+// 排障时直接看这个文件。
+static void snipLog(QtMsgType type, const QMessageLogContext&, const QString& msg) {
+    const char* level = "INFO";
+    if (type == QtWarningMsg) level = "WARN";
+    else if (type == QtCriticalMsg) level = "ERR ";
+    else if (type == QtFatalMsg) level = "FATAL";
+    static QMutex mutex;
+    QMutexLocker lock(&mutex);
+    const QString dir = QStandardPaths::writableLocation(QStandardPaths::AppDataLocation);
+    QDir().mkpath(dir);
+    QFile f(dir + "/snipshot.log");
+    if (f.open(QIODevice::WriteOnly | QIODevice::Append)) {
+        f.write(QDateTime::currentDateTime().toString("MM-dd HH:mm:ss.zzz ").toUtf8());
+        f.write(level);
+        f.write(" ");
+        f.write(msg.toUtf8());
+        f.write("\n");
+    }
+#ifdef Q_OS_WIN
+    OutputDebugStringW(reinterpret_cast<LPCWSTR>((QString(msg) + "\n").utf16()));
+#endif
+}
 
 #include "settings.h"
 #include "capture.h"
@@ -50,11 +86,12 @@ public slots:
 
 private:
     void startOverlay(CaptureSession::Mode mode);
-    void startSession(const QImage& img, CaptureSession::Mode mode);
+    void startSession(const QImage& img, const QList<ScreenShot>& shots, CaptureSession::Mode mode);
     void closeSession();
     void setActiveView(OverlayView* view);
     void handleAction(int action, const QImage& img, const QRect& rect);
     void showTextPin(const QImage& img, const QRect& rect, const QString& mode);
+    void showPinWithOcr(const QImage& img, const QRect& rect, bool translateMode);
     void saveImage(const QImage& img);
     void pinFullDesktop(const QImage& img);
     void preview(const QString& path);
@@ -102,7 +139,7 @@ void App::init(const QStringList& args) {
     m_recorder = new ScreenRecorder(this);
     connect(m_recorder, &ScreenRecorder::started, this, [this](const QString& file) {
         if (m_recordAction)
-            m_recordAction->setText(QStringLiteral("停止录屏 (Alt+R)"));
+            m_recordAction->setText(QStringLiteral("停止录屏 (%1)").arg(Settings::load().hkRecord));
         if (m_tray)
             m_tray->showMessage(QStringLiteral("SnipShot 录屏"),
                                 QStringLiteral("开始录屏：") + file,
@@ -110,7 +147,7 @@ void App::init(const QStringList& args) {
     });
     connect(m_recorder, &ScreenRecorder::finished, this, [this](const QString& file) {
         if (m_recordAction)
-            m_recordAction->setText(QStringLiteral("开始录屏 (Alt+R)"));
+            m_recordAction->setText(QStringLiteral("开始录屏 (%1)").arg(Settings::load().hkRecord));
         if (m_tray)
             m_tray->showMessage(QStringLiteral("SnipShot 录屏"),
                                 QStringLiteral("录屏已保存：") + file,
@@ -118,27 +155,40 @@ void App::init(const QStringList& args) {
     });
     connect(m_recorder, &ScreenRecorder::error, this, [this](const QString& e) {
         if (m_recordAction)
-            m_recordAction->setText(QStringLiteral("开始录屏 (Alt+R)"));
+            m_recordAction->setText(QStringLiteral("开始录屏 (%1)").arg(Settings::load().hkRecord));
         if (m_tray)
             m_tray->showMessage(QStringLiteral("SnipShot 录屏"), e,
                                 QSystemTrayIcon::Warning, 4000);
     });
 
     auto* menu = new QMenu;
-    menu->addAction(QStringLiteral("截图 (F1)"), this, &App::snip);
-    menu->addAction(QStringLiteral("固定贴图 (F2)"), this, &App::pinLast);
-    menu->addAction(QStringLiteral("隐藏/显示贴图 (F3)"), this, &App::togglePins);
+    const Settings hotkeySettings = Settings::load();
+    menu->addAction(QStringLiteral("截图 (%1)").arg(hotkeySettings.hkSnip), this, &App::snip);
+    menu->addAction(QStringLiteral("固定贴图 (%1)").arg(hotkeySettings.hkPin), this, &App::pinLast);
+    menu->addAction(QStringLiteral("隐藏/显示贴图 (%1)").arg(hotkeySettings.hkTogglePins), this, &App::togglePins);
     menu->addSeparator();
-    menu->addAction(QStringLiteral("截屏翻译 (Alt+Q)"), this, &App::translate);
-    menu->addAction(QStringLiteral("文字提取 (Alt+W)"), this, &App::ocr);
+    menu->addAction(QStringLiteral("截屏翻译 (%1)").arg(hotkeySettings.hkTranslate), this, &App::translate);
+    menu->addAction(QStringLiteral("文字提取 (%1)").arg(hotkeySettings.hkOcr), this, &App::ocr);
     menu->addSeparator();
-    menu->addAction(QStringLiteral("剪贴板历史 (Alt+V)"), this, &App::showClipboard);
-    m_recordAction = menu->addAction(QStringLiteral("开始录屏 (Alt+R)"), this, &App::toggleRecording);
+    menu->addAction(QStringLiteral("剪贴板历史 (%1)").arg(hotkeySettings.hkClipboard), this, &App::showClipboard);
+    m_recordAction = menu->addAction(QStringLiteral("开始录屏 (%1)").arg(hotkeySettings.hkRecord), this, &App::toggleRecording);
     menu->addSeparator();
     menu->addAction(QStringLiteral("设置…"), this, &App::settings);
     menu->addAction(QStringLiteral("退出"), qApp, &QApplication::quit);
     m_tray->setContextMenu(menu);
     m_tray->show();
+
+#ifdef Q_OS_WIN
+    QStringList hkProblems;
+    Hotkeys::installWindows(Settings::load(),
+                            [this](const QString& cmd) { handleCommand(cmd); },
+                            &hkProblems);
+    if (!hkProblems.isEmpty() && m_tray) {
+        m_tray->showMessage(QStringLiteral("SnipShot 快捷键"),
+                            QStringLiteral("以下快捷键未能注册：\n") + hkProblems.join('\n'),
+                            QSystemTrayIcon::Warning, 8000);
+    }
+#endif
 
     for (int i = 0; i < args.size(); ++i) {
         const QString& a = args[i];
@@ -176,10 +226,119 @@ void App::handleCommand(const QString& cmd) {
         debugShot(cmd.mid(13));
     else if (cmd.startsWith("--debug-grab="))
         debugGrab(cmd.mid(13));
+    else if (cmd.startsWith("--debug-screens=")) {
+        const QString dir = cmd.mid(16);
+        QDir().mkpath(dir);
+        for (QScreen* s : QGuiApplication::screens()) {
+            const QPixmap pm = s->grabWindow(0);
+            QString safe = s->name();
+            for (QChar& c : safe) {
+                if (!c.isLetterOrNumber())
+                    c = '_';
+            }
+            const QString path = dir + "/qt_" + safe + ".png";
+            pm.save(path);
+            qInfo() << "debug-screens" << s->name() << s->geometry() << "grab" << pm.size() << path;
+        }
+    }
+    else if (cmd.startsWith("--debug-windows")) {
+        for (QWidget* w : QApplication::topLevelWidgets()) {
+            qInfo() << "toplevel" << w->metaObject()->className() << "visible" << w->isVisible()
+                    << "enabled" << w->isEnabled()
+                    << "modal" << (w->isWindow() && w->windowModality() != Qt::NonModal)
+                    << "geometry" << w->geometry() << "title" << w->windowTitle();
+        }
+    }
+    else if (cmd.startsWith("--debug-border=")) {
+        const bool on = cmd.mid(15).trimmed() != QStringLiteral("0");
+        for (QWidget* w : QApplication::topLevelWidgets()) {
+            if (auto* p = qobject_cast<TranslatePinWindow*>(w)) {
+                p->setBorderVisible(on);
+                qInfo() << "debug-border" << on << p->geometry();
+            }
+        }
+    }
+    else if (cmd.startsWith("--debug-raise")) {
+        for (QWidget* w : QApplication::topLevelWidgets()) {
+            if (auto* p = qobject_cast<TranslatePinWindow*>(w)) {
+                p->raise();
+                p->activateWindow();
+#ifdef Q_OS_WIN
+                SetWindowPos(reinterpret_cast<HWND>(p->winId()), HWND_TOPMOST, 0, 0, 0, 0,
+                             SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
+#endif
+                p->update();
+                qInfo() << "debug-raise" << p->geometry();
+            }
+        }
+    }
+    else if (cmd.startsWith("--debug-hit=")) {
+#ifdef Q_OS_WIN
+        const QStringList xy = cmd.mid(12).split(',');
+        if (xy.size() == 2) {
+            POINT pt{xy[0].toInt(), xy[1].toInt()};
+            HWND h = WindowFromPoint(pt);
+            wchar_t cls[256]{};
+            GetClassNameW(h, cls, 256);
+            qInfo() << "debug-hit" << pt.x << pt.y << "hwnd" << (quintptr)h
+                    << "class" << QString::fromWCharArray(cls);
+        }
+#endif
+    }
+    else if (cmd.startsWith("--debug-children")) {
+        for (QWidget* w : QApplication::topLevelWidgets()) {
+            if (auto* p = qobject_cast<TranslatePinWindow*>(w)) {
+                qInfo() << "pin" << p->geometry() << "visible" << p->isVisible();
+                for (QObject* c : p->children()) {
+                    auto* cw = qobject_cast<QWidget*>(c);
+                    if (cw)
+                        qInfo() << "  child" << cw->metaObject()->className() << cw->geometry()
+                                << "visible" << cw->isVisible();
+                }
+            }
+        }
+    }
+    else if (cmd.startsWith("--debug-lang=")) {
+        const QString lang = cmd.mid(13);
+        for (QWidget* w : QApplication::topLevelWidgets()) {
+            if (auto* p = qobject_cast<TranslatePinWindow*>(w)) {
+                p->setTargetLanguage(lang);
+                qInfo() << "debug-lang" << lang << p->geometry();
+            }
+        }
+    }
+    else if (cmd.startsWith("--debug-panel=")) {
+        const bool on = cmd.mid(14).trimmed() != QStringLiteral("0");
+        for (QWidget* w : QApplication::topLevelWidgets()) {
+            if (auto* p = qobject_cast<TranslatePinWindow*>(w)) {
+                p->showTextPanel(on);
+                qInfo() << "debug-panel" << on;
+            }
+        }
+    }
+    else if (cmd.startsWith("--debug-ocr=")) {
+        const QString p = cmd.mid(12);
+        const QImage img(p);
+        if (img.isNull()) {
+            qWarning() << "debug-ocr 读图失败:" << p;
+        } else {
+            WindowsOcr::recognizeAsync(img, this, [](QList<OcrLine> lines, QString err) {
+                qInfo() << "debug-ocr 行数:" << lines.size() << "错误:" << err;
+                for (const OcrLine& l : lines)
+                    qInfo() << "debug-ocr box:" << l.box << "text:" << l.text;
+            });
+        }
+    }
     else if (cmd == "--clipboard")
         showClipboard();
-    else if (cmd == "--register-hotkeys")
+    else if (cmd == "--register-hotkeys") {
+#ifdef Q_OS_WIN
+        QStringList problems;
+        Hotkeys::reinstallWindows(Settings::load(), &problems);
+#else
         Hotkeys::installGnome(Settings::load());
+#endif
+    }
     else if (cmd == "--record-toggle")
         toggleRecording();
     else if (cmd.startsWith("--clip-file=")) {
@@ -209,10 +368,10 @@ void App::closeSession() {
     }
 }
 
-void App::startSession(const QImage& img, CaptureSession::Mode mode) {
+void App::startSession(const QImage& img, const QList<ScreenShot>& shots, CaptureSession::Mode mode) {
     qInfo() << "startSession 屏幕数:" << QGuiApplication::screens().size();
     closeSession();
-    m_session = new CaptureSession(img, mode, this);
+    m_session = new CaptureSession(img, shots, mode, this);
 
     connect(m_session, &CaptureSession::aiRequested, this,
             [this](const QImage& im, const QRect& r, int mode) {
@@ -282,7 +441,7 @@ void App::startOverlay(CaptureSession::Mode mode) {
                 return;
             }
             m_capturing = false;
-            startSession(img, mode);
+            startSession(img, cap->shots(), mode);
             cap->deleteLater();
         });
         connect(cap, &Capture::failed, this, [this, cap, gen](const QString& e) {
@@ -298,11 +457,40 @@ void App::startOverlay(CaptureSession::Mode mode) {
     });
 }
 
+void App::showPinWithOcr(const QImage& img, const QRect& rect, bool translateMode) {
+#ifdef Q_OS_WIN
+    // 截图定格 → 本地 OCR 拿行坐标 → 翻译模式逐行翻译并原位覆盖；
+    // 文字提取模式只把行文本填进可编辑的文本栏。
+    auto* pin = new TranslatePinWindow(img, rect, translateMode);
+    PinManager::instance()->registerPin(pin);
+
+    QPointer<TranslatePinWindow> guard(pin);
+    WindowsOcr::recognizeAsync(img, this, [guard](QList<OcrLine> lines, QString err) {
+        if (!guard)
+            return;
+        if (lines.isEmpty()) {
+            guard->setMessage(err.isEmpty() ? QStringLiteral("未识别到文字")
+                                            : QStringLiteral("识别失败：") + err.left(60));
+            return;
+        }
+        guard->setSourceLines(lines);
+    });
+#else
+    Q_UNUSED(translateMode);
+    auto* pin = new TextPinWindow(img, rect, translateMode ? QStringLiteral("translate")
+                                                            : QStringLiteral("ocr"));
+    PinManager::instance()->registerPin(pin);
+#endif
+}
+
 void App::showTextPin(const QImage& img, const QRect& rect, const QString& mode) {
     // 翻译/取字结果贴图：立即固定贴出，AI 在贴图内部异步完成；
     // 不占用截图会话，等待期间可以继续 F1/F2。
-    auto* pin = new TextPinWindow(img, rect, mode);
-    PinManager::instance()->registerPin(pin);
+    if (mode == QStringLiteral("translate")) {
+        showPinWithOcr(img, rect, true);
+        return;
+    }
+    showPinWithOcr(img, rect, false);
 }
 
 void App::handleAction(int action, const QImage& img, const QRect& rect) {
@@ -411,10 +599,34 @@ void App::togglePins() {
 }
 
 void App::settings() {
-    SettingsDialog dlg;
-    dlg.exec();
-    if (m_clipboard)
-        m_clipboard->reloadSettings();
+    // 非模态：设置开着时仍然可以截图/用剪贴板，避免“整个软件像卡死”
+    auto* dlg = new SettingsDialog(nullptr);
+    dlg->setAttribute(Qt::WA_DeleteOnClose);
+    dlg->setWindowFlag(Qt::WindowStaysOnTopHint, true);
+    QScreen* s = QGuiApplication::screenAt(QCursor::pos());
+    if (!s)
+        s = QGuiApplication::primaryScreen();
+    if (s) {
+        const QRect g = s->availableGeometry();
+        const QSize sz = dlg->sizeHint().expandedTo(QSize(620, 560));
+        dlg->move(g.center() - QPoint(sz.width() / 2, sz.height() / 2));
+    }
+    connect(dlg, &QDialog::accepted, this, [this]() {
+        if (m_clipboard)
+            m_clipboard->reloadSettings();
+#ifdef Q_OS_WIN
+        QStringList problems;
+        Hotkeys::reinstallWindows(Settings::load(), &problems);
+        if (!problems.isEmpty() && m_tray) {
+            m_tray->showMessage(QStringLiteral("SnipShot 快捷键"),
+                                QStringLiteral("以下快捷键未能注册：\n") + problems.join('\n'),
+                                QSystemTrayIcon::Warning, 8000);
+        }
+#endif
+    });
+    dlg->show();
+    dlg->raise();
+    dlg->activateWindow();
 }
 
 void App::showClipboard() {
@@ -498,10 +710,15 @@ void App::preview(const QString& path) {
         return;
     }
     m_capturing = false;
-    startSession(img, CaptureSession::Snip);
+    startSession(img, {}, CaptureSession::Snip);
 }
 
 int main(int argc, char** argv) {
+#ifdef Q_OS_WIN
+    qInstallMessageHandler(snipLog);
+    // 必须在 QApplication 之前：保证抓屏拿到真实物理像素，坐标不被系统虚拟化。
+    SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
+#endif
     if (qEnvironmentVariableIsSet("SNIPSHOT_PLATFORM"))
         qputenv("QT_QPA_PLATFORM", qgetenv("SNIPSHOT_PLATFORM"));
     else if (qEnvironmentVariableIsSet("WAYLAND_DISPLAY"))

@@ -33,7 +33,7 @@ static const QStringList kActionNames{
 
 OverlayView::OverlayView(CaptureSession* session, QScreen* screen, QWidget* parent)
     : QWidget(parent), m_session(session), m_screen(screen) {
-    setWindowFlags(Qt::Window | Qt::FramelessWindowHint);
+    setWindowFlags(Qt::Window | Qt::FramelessWindowHint | Qt::WindowStaysOnTopHint);
     setAttribute(Qt::WA_DeleteOnClose);
     setAttribute(Qt::WA_OpaquePaintEvent);
     setCursor(Qt::CrossCursor);
@@ -41,28 +41,28 @@ OverlayView::OverlayView(CaptureSession* session, QScreen* screen, QWidget* pare
     setMouseTracking(true);
     winId();
     if (windowHandle()) {
-        windowHandle()->setScreen(screen);
         connect(windowHandle(), &QWindow::screenChanged, this, [this](QScreen* s) {
-            if (s) {
+            if (s && s != m_screen && geometry() == s->geometry()) {
                 m_screen = s;
                 update();
                 syncEditor();
             }
         });
     }
+    // Windows 下 showFullScreen() 会把窗口吸到“当前屏幕”，负坐标副屏容易跑到主屏；
+    // 这里改成无边框、铺满目标屏几何区域的普通窗口，定位稳定且照样盖住任务栏。
     setGeometry(logicalScreenGeometry(screen));
     qInfo() << "OverlayView 请求屏幕:" << (screen ? screen->name() : QStringLiteral("?"))
             << logicalScreenGeometry(screen);
-    showFullScreen();
+    show();
+    raise();
+    if (windowHandle())
+        windowHandle()->setScreen(screen);
+    setGeometry(logicalScreenGeometry(screen));
     QTimer::singleShot(200, this, [this]() {
         if (windowHandle() && windowHandle()->screen()) {
-            if (m_screen != windowHandle()->screen()) {
-                m_screen = windowHandle()->screen();
-                update();
-                syncEditor();
-            }
-            qInfo() << "OverlayView 实际屏幕:" << m_screen->name()
-                    << m_screen->geometry() << "窗口:" << geometry();
+            qInfo() << "OverlayView 实际屏幕:" << windowHandle()->screen()->name()
+                    << windowHandle()->screen()->geometry() << "窗口:" << geometry();
         }
     });
     connect(m_session, &CaptureSession::changed, this, &OverlayView::onSessionChanged);

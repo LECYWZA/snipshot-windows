@@ -24,6 +24,7 @@ Settings Settings::load() {
     st.apiBase  = s.value("api/base", st.apiBase).toString();
     st.apiKey   = s.value("api/key", st.apiKey).toString();
     st.model    = s.value("api/model", st.model).toString();
+    st.translateTarget = s.value("translate/target", st.translateTarget).toString();
     st.saveDir  = s.value("save/dir", defaultSaveDir()).toString();
     st.hkSnip       = s.value("hotkey/snip", st.hkSnip).toString();
     st.hkPin        = s.value("hotkey/pin", st.hkPin).toString();
@@ -39,6 +40,7 @@ Settings Settings::load() {
     st.recordCursor     = s.value("record/cursor", st.recordCursor).toBool();
     st.recordDir        = s.value("record/dir", defaultRecordDir()).toString();
     st.hkRecord         = s.value("hotkey/record", st.hkRecord).toString();
+    st.ffmpegPath       = s.value("record/ffmpeg", st.ffmpegPath).toString();
     return st;
 }
 
@@ -47,6 +49,7 @@ void Settings::save() const {
     s.setValue("api/base", apiBase);
     s.setValue("api/key", apiKey);
     s.setValue("api/model", model);
+    s.setValue("translate/target", translateTarget);
     s.setValue("save/dir", saveDir);
     s.setValue("hotkey/snip", hkSnip);
     s.setValue("hotkey/pin", hkPin);
@@ -62,4 +65,5 @@ void Settings::save() const {
     s.setValue("record/cursor", recordCursor);
     s.setValue("record/dir", recordDir);
     s.setValue("hotkey/record", hkRecord);
+    s.setValue("record/ffmpeg", ffmpegPath);
 }

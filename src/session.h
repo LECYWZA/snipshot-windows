@@ -13,6 +13,8 @@
 #include <QFont>
 #include <QHash>
 
+#include "capture.h"
+
 class QScreen;
 
 // 一次截图会话：整张桌面图 + 全局选区 + 标注 + 结果。
@@ -37,7 +39,8 @@ public:
         qreal rotation = 0;   // 度
     };
 
-    explicit CaptureSession(const QImage& fullImage, Mode mode, QObject* parent = nullptr);
+    explicit CaptureSession(const QImage& fullImage, const QList<ScreenShot>& shots,
+                            Mode mode, QObject* parent = nullptr);
 
     const QImage& fullImage() const { return m_full; }
     QRect desk() const { return m_desk; }
@@ -139,6 +142,7 @@ private:
     void drawAnn(QPainter& p, const Ann& a, bool editing, const QImage& source) const;
 
     QImage m_full;
+    QList<ScreenShot> m_shots;   // 逐屏原始分辨率图（高分辨率输出用）
     QRect m_desk;
     Mode m_mode = Snip;
     QRect m_sel;

@@ -6,6 +6,7 @@
 class QLineEdit;
 class QCheckBox;
 class QSpinBox;
+class QComboBox;
 
 // 设置界面：OpenAI API、保存目录、快捷键、剪贴板、录屏
 class SettingsDialog : public QDialog {
@@ -23,6 +24,7 @@ private:
     QLineEdit* m_base;
     QLineEdit* m_key;
     QLineEdit* m_model;
+    QComboBox* m_translateTarget = nullptr;
     QLineEdit* m_dir;
     QLineEdit* m_recordDir;
     QLineEdit* m_hkSnip;
@@ -38,4 +40,5 @@ private:
     QCheckBox* m_recEnabled;
     QSpinBox* m_recFps;
     QCheckBox* m_recCursor;
+    QLineEdit* m_ffmpeg = nullptr;
 };

@@ -20,9 +20,17 @@ static qreal angleDeg(const QPointF& c, const QPointF& p) {
     return qRadiansToDegrees(std::atan2(p.y() - c.y(), p.x() - c.x()));
 }
 
-CaptureSession::CaptureSession(const QImage& fullImage, Mode mode, QObject* parent)
-    : QObject(parent), m_full(fullImage), m_desk(virtualDesktopRect()), m_mode(mode) {
-    qInfo() << "Session 桌面:" << m_desk << "图片:" << m_full.size();
+CaptureSession::CaptureSession(const QImage& fullImage, const QList<ScreenShot>& shots,
+                               Mode mode, QObject* parent)
+    : QObject(parent), m_full(fullImage), m_shots(shots), m_desk(virtualDesktopRect()), m_mode(mode) {
+    if (!m_shots.isEmpty()) {
+        QRect desk;
+        for (const ScreenShot& s : m_shots)
+            desk = desk.united(s.logicalRect);
+        if (!desk.isEmpty())
+            m_desk = desk;
+    }
+    qInfo() << "Session 桌面:" << m_desk << "图片:" << m_full.size() << "逐屏快照:" << m_shots.size();
 }
 
 QRect CaptureSession::screenRect(QScreen* s) const {
@@ -322,6 +330,26 @@ QImage CaptureSession::screenImage(QScreen* s, bool dimmed) const {
     auto it = cache.constFind(s);
     if (it != cache.constEnd())
         return it.value();
+
+    // Windows：直接用该屏原始物理图，叠加层 1:1 清晰显示。
+    for (const ScreenShot& sh : m_shots) {
+        if (sh.screen != s)
+            continue;
+        const double dpr = s->devicePixelRatio();
+        const QSize sz(qRound(sr.width() * dpr), qRound(sr.height() * dpr));
+        QImage out = sh.physical;
+        if (out.size() != sz)
+            out = out.scaled(sz, Qt::IgnoreAspectRatio, Qt::SmoothTransformation);
+        out = out.convertToFormat(QImage::Format_ARGB32_Premultiplied);
+        out.setDevicePixelRatio(1.0);
+        if (dimmed) {
+            QPainter dp(&out);
+            dp.fillRect(out.rect(), kMask);
+            dp.end();
+        }
+        cache.insert(s, out);
+        return out;
+    }
 
     // 从原始高分辨率图切出本屏，缩放到 Qt 后备缓冲的物理像素尺寸；
     // 之后每帧都是 1:1 blit，不再做缩放。
@@ -646,6 +674,41 @@ QImage CaptureSession::currentResult() const {
     if (!hasSelection())
         return QImage();
     const QRect sel = selection();
+
+    // Windows：按各屏原始物理图合成，保留 4K/高 DPI 原始分辨率。
+    if (!m_shots.isEmpty()) {
+        qreal k = 1.0;
+        for (const ScreenShot& sh : m_shots) {
+            if (sh.logicalRect.intersects(sel))
+                k = qMax(k, sh.scale);
+        }
+        QImage out(qRound(sel.width() * k), qRound(sel.height() * k),
+                   QImage::Format_ARGB32_Premultiplied);
+        out.fill(Qt::black);
+        QPainter p(&out);
+        p.setRenderHint(QPainter::SmoothPixmapTransform, true);
+        for (const ScreenShot& sh : m_shots) {
+            const QRect inter = sel.intersected(sh.logicalRect);
+            if (inter.isEmpty() || sh.physical.isNull())
+                continue;
+            const QRectF srcF((inter.x() - sh.logicalRect.x()) * sh.scale,
+                              (inter.y() - sh.logicalRect.y()) * sh.scale,
+                              inter.width() * sh.scale, inter.height() * sh.scale);
+            const QRectF dstF((inter.x() - sel.x()) * k, (inter.y() - sel.y()) * k,
+                              inter.width() * k, inter.height() * k);
+            p.drawImage(dstF, sh.physical, srcF);
+        }
+        const double sx = double(out.width()) / qMax(1, sel.width());
+        const double sy = double(out.height()) / qMax(1, sel.height());
+        p.scale(sx, sy);
+        p.translate(-sel.topLeft());
+        for (const Ann& a : m_anns)
+            drawAnn(p, a, false, m_full);
+        p.end();
+        out.setDevicePixelRatio(sx);
+        return out;
+    }
+
     QImage out = m_full.copy(sourceRect(sel));
     if (out.isNull())
         return out;

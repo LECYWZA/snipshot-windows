@@ -1,7 +1,11 @@
 build/
+dist/
 CMakeCache.txt
 CMakeFiles/
 *.o
+*.obj
 *.autosave
 *.user
+*.zip
 .cache/
+aqtinstall.log

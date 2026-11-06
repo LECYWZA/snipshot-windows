@@ -40,6 +40,7 @@ public:
     void copyItem(int index);
     void togglePinned(int index);
     void removeItem(int index);
+    void updateText(int index, const QString& text);
     void clearUnpinned();
     void refreshWindow();
 

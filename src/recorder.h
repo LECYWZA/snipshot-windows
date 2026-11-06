@@ -26,4 +26,6 @@ private:
     bool m_recording = false;
     QString m_file;
     QString m_lastFile;
+    class QProcess* m_proc = nullptr;
+    bool m_stopping = false;
 };

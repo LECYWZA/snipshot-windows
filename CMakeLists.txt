@@ -5,7 +5,11 @@ set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_AUTOMOC ON)
 
-find_package(Qt6 REQUIRED COMPONENTS Widgets Network DBus)
+if(WIN32)
+    find_package(Qt6 REQUIRED COMPONENTS Widgets Network Concurrent)
+else()
+    find_package(Qt6 REQUIRED COMPONENTS Widgets Network DBus)
+endif()
 
 add_executable(snipshot
     src/main.cpp
@@ -22,8 +26,22 @@ add_executable(snipshot
     src/hotkeys.cpp
 )
 
-target_link_libraries(snipshot PRIVATE
-    Qt6::Widgets
-    Qt6::Network
-    Qt6::DBus
-)
+if(WIN32)
+    target_sources(snipshot PRIVATE src/ocr_win.cpp)
+    target_link_libraries(snipshot PRIVATE
+        Qt6::Widgets
+        Qt6::Network
+        Qt6::Concurrent
+        user32
+        gdi32
+        dwmapi
+        windowsapp
+    )
+    set_target_properties(snipshot PROPERTIES WIN32_EXECUTABLE TRUE)
+else()
+    target_link_libraries(snipshot PRIVATE
+        Qt6::Widgets
+        Qt6::Network
+        Qt6::DBus
+    )
+endif()

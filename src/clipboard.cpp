@@ -22,6 +22,12 @@
 #include <QLineEdit>
 #include <QListWidget>
 #include <QListWidgetItem>
+#include <QTabBar>
+#include <QMenu>
+#include <QInputDialog>
+#include <QScreen>
+#include <QStyledItemDelegate>
+#include <QPainter>
 #include <QPushButton>
 #include <QLabel>
 #include <QMessageBox>
@@ -34,6 +40,81 @@
 
 // ---------------- 历史窗口 ----------------
 
+class ClipItemDelegate : public QStyledItemDelegate {
+public:
+    explicit ClipItemDelegate(ClipboardManager* mgr, QObject* parent = nullptr)
+        : QStyledItemDelegate(parent), m_mgr(mgr) {}
+
+    QSize sizeHint(const QStyleOptionViewItem&, const QModelIndex&) const override {
+        return QSize(0, 58);
+    }
+
+    void paint(QPainter* p, const QStyleOptionViewItem& opt, const QModelIndex& idx) const override {
+        const int i = idx.data(Qt::UserRole).toInt();
+        const auto& items = m_mgr->items();
+        if (i < 0 || i >= items.size())
+            return;
+        const ClipItem& c = items[i];
+        p->save();
+        p->setRenderHint(QPainter::Antialiasing, true);
+        QRect r = opt.rect.adjusted(4, 3, -4, -3);
+        if (opt.state & QStyle::State_Selected) {
+            p->setPen(Qt::NoPen);
+            p->setBrush(QColor(43, 58, 74));
+            p->drawRoundedRect(r, 6, 6);
+        } else if (opt.state & QStyle::State_MouseOver) {
+            p->setPen(Qt::NoPen);
+            p->setBrush(QColor(38, 38, 43));
+            p->drawRoundedRect(r, 6, 6);
+        }
+
+        QRect thumb(r.left() + 8, r.top() + 6, 76, 44);
+        p->setPen(Qt::NoPen);
+        p->setBrush(QColor(38, 38, 43));
+        p->drawRoundedRect(thumb, 4, 4);
+
+        QString title;
+        if (c.kind == ClipItem::Image) {
+            const QPixmap pm(c.imagePath);
+            if (!pm.isNull()) {
+                const QPixmap s = pm.scaled(72, 40, Qt::KeepAspectRatio, Qt::SmoothTransformation);
+                p->drawPixmap(thumb.center() - QPoint(s.width() / 2, s.height() / 2), s);
+                title = QStringLiteral("图片  %1×%2").arg(pm.width()).arg(pm.height());
+            } else {
+                title = QStringLiteral("图片（文件缺失）");
+            }
+        } else {
+            p->setPen(QColor(154, 160, 166));
+            QFont tf = opt.font;
+            tf.setPixelSize(13);
+            p->setFont(tf);
+            p->drawText(thumb, Qt::AlignCenter, QStringLiteral("T"));
+            title = c.text.simplified();
+        }
+
+        QFont f = opt.font;
+        f.setPixelSize(12);
+        p->setFont(f);
+        p->setPen(QColor(234, 234, 234));
+        const QRect titleRect(thumb.right() + 10, r.top() + 7, r.width() - thumb.width() - 28, 20);
+        p->drawText(titleRect, Qt::AlignLeft | Qt::AlignVCenter,
+                    QFontMetrics(f).elidedText(title, Qt::ElideRight, titleRect.width()));
+
+        f.setPixelSize(10);
+        p->setFont(f);
+        p->setPen(QColor(139, 144, 150));
+        QString detail = c.time.toString(QStringLiteral("MM-dd HH:mm"));
+        if (c.pinned)
+            detail += QStringLiteral("    ★ 已固定");
+        p->drawText(QRect(titleRect.left(), titleRect.bottom() + 2, titleRect.width(), 16),
+                    Qt::AlignLeft | Qt::AlignVCenter, detail);
+        p->restore();
+    }
+
+private:
+    ClipboardManager* m_mgr = nullptr;
+};
+
 class ClipboardWindow : public QDialog {
     Q_OBJECT
 public:
@@ -41,23 +122,49 @@ public:
         : QDialog(parent), m_mgr(mgr) {
         setWindowTitle(QStringLiteral("SnipShot 剪贴板历史"));
         setWindowFlags(windowFlags() | Qt::WindowStaysOnTopHint);
-        resize(620, 680);
+        resize(680, 700);
+        setStyleSheet(
+            "QDialog { background:#1b1b1e; }"
+            "QLabel { color:#e6e6e6; }"
+            "QLineEdit { background:#26262a; color:#eee; border:1px solid #333; "
+            "border-radius:5px; padding:5px 8px; }"
+            "QListWidget { background:transparent; border:none; outline:none; }"
+            "QListWidget::item { border:0; }"
+            "QListWidget::item:selected { background:#2b3a4a; border-radius:6px; }"
+            "QPushButton { background:#2a2a2e; color:#eee; border:none; padding:6px 12px; "
+            "border-radius:5px; }"
+            "QPushButton:hover { background:#3a3a40; }"
+            "QPushButton:disabled { color:#777; background:#232326; }"
+            "QTabBar::tab { background:transparent; color:#9aa0a6; padding:6px 14px; "
+            "border:none; }"
+            "QTabBar::tab:selected { color:#4db8ff; border-bottom:2px solid #4db8ff; }");
+
+        m_tabs = new QTabBar;
+        m_tabs->addTab(QStringLiteral("当前"));
+        m_tabs->addTab(QStringLiteral("固定"));
+        m_tabs->setExpanding(false);
+        m_tabs->setDrawBase(false);
 
         auto* top = new QHBoxLayout;
+        top->addWidget(m_tabs);
+        top->addSpacing(8);
         m_search = new QLineEdit;
-        m_search->setPlaceholderText(QStringLiteral("搜索文本…"));
+        m_search->setPlaceholderText(QStringLiteral("搜索文本或图片…"));
         top->addWidget(m_search, 1);
         m_status = new QLabel;
-        m_status->setStyleSheet("QLabel { color:#888; }");
+        m_status->setStyleSheet("QLabel { color:#888; font-size:11px; }");
         top->addWidget(m_status);
 
         m_list = new QListWidget;
-        m_list->setIconSize(QSize(72, 48));
-        m_list->setWordWrap(true);
+        m_list->setIconSize(QSize(72, 44));
+        m_list->setSpacing(2);
+        m_list->setVerticalScrollMode(QAbstractItemView::ScrollPerPixel);
+        m_list->setItemDelegate(new ClipItemDelegate(mgr, m_list));
+        m_list->setMouseTracking(true);
 
         auto* btns = new QHBoxLayout;
         m_copy = new QPushButton(QStringLiteral("复制"));
-        m_pin = new QPushButton(QStringLiteral("固定 / 取消固定"));
+        m_pin = new QPushButton(QStringLiteral("固定"));
         m_del = new QPushButton(QStringLiteral("删除"));
         m_clear = new QPushButton(QStringLiteral("清空未固定"));
         auto* close = new QPushButton(QStringLiteral("关闭"));
@@ -69,12 +176,18 @@ public:
         btns->addWidget(close);
 
         auto* lay = new QVBoxLayout(this);
+        lay->setContentsMargins(12, 10, 12, 12);
         lay->addLayout(top);
         lay->addWidget(m_list, 1);
         lay->addLayout(btns);
 
+        connect(m_tabs, &QTabBar::currentChanged, this, [this]() { refresh(); });
         connect(m_search, &QLineEdit::textChanged, this, [this]() { refresh(); });
-        connect(m_list, &QListWidget::itemDoubleClicked, this, [this](QListWidgetItem*) { doCopy(); });
+        connect(m_list, &QListWidget::itemDoubleClicked, this,
+                [this](QListWidgetItem* it) { activateItem(it); });
+        m_list->setContextMenuPolicy(Qt::CustomContextMenu);
+        connect(m_list, &QListWidget::customContextMenuRequested, this,
+                [this](const QPoint& p) { showItemMenu(p); });
         connect(m_copy, &QPushButton::clicked, this, [this]() { doCopy(); });
         connect(m_pin, &QPushButton::clicked, this, [this]() {
             if (auto* it = m_list->currentItem())
@@ -93,6 +206,7 @@ public:
 
     void refresh() {
         const QString q = m_search->text().trimmed();
+        const bool pinnedTab = m_tabs->currentIndex() == 1;
         m_list->clear();
         const auto& items = m_mgr->items();
         int shown = 0, pinned = 0;
@@ -100,32 +214,21 @@ public:
             const ClipItem& c = items[i];
             if (c.pinned)
                 ++pinned;
+            if (pinnedTab && !c.pinned)
+                continue;
             if (!q.isEmpty()) {
                 const QString hay = c.kind == ClipItem::Text ? c.text : QStringLiteral("图片");
                 if (!hay.contains(q, Qt::CaseInsensitive))
                     continue;
             }
-            QString label;
-            if (c.kind == ClipItem::Text)
-                label = c.text.simplified().left(140);
-            else
-                label = QStringLiteral("[图片] ") + QFileInfo(c.imagePath).fileName();
-            if (c.pinned)
-                label.prepend(QStringLiteral("★ "));
-            label += QStringLiteral("    ") + c.time.toString("MM-dd HH:mm");
-            auto* it = new QListWidgetItem(label);
-            it->setData(Qt::UserRole, i);
-            if (c.kind == ClipItem::Image) {
-                QPixmap pm(c.imagePath);
-                if (!pm.isNull())
-                    it->setIcon(QIcon(pm.scaled(72, 48, Qt::KeepAspectRatio, Qt::SmoothTransformation)));
-            } else {
-                it->setIcon(QIcon::fromTheme("text-x-generic"));
-            }
-            m_list->addItem(it);
-            ++shown;
-        }
-        m_status->setText(QString("共 %1 · 固定 %2 · 显示 %3").arg(items.size()).arg(pinned).arg(shown));
+            makeRow(c, i);
+            ++shown;        }
+        m_status->setText(QStringLiteral("共 %1 · 固定 %2 · 显示 %3")
+                              .arg(items.size())
+                              .arg(pinned)
+                              .arg(shown));
+        m_tabs->setTabText(0, QStringLiteral("当前"));
+        m_tabs->setTabText(1, QStringLiteral("固定 %1").arg(pinned));
         updateButtons();
     }
 
@@ -145,6 +248,82 @@ protected:
     }
 
 private:
+    void activateItem(QListWidgetItem* it) {
+        if (!it)
+            return;
+        const int idx = it->data(Qt::UserRole).toInt();
+        const auto& items = m_mgr->items();
+        if (idx < 0 || idx >= items.size())
+            return;
+        if (items[idx].kind == ClipItem::Image)
+            previewImage(items[idx].imagePath);
+        else
+            doCopy();
+    }
+
+    void previewImage(const QString& path) {
+        QPixmap pm(path);
+        if (pm.isNull())
+            return;
+        QDialog dlg(this);
+        dlg.setWindowTitle(QStringLiteral("图片预览"));
+        dlg.setStyleSheet("QDialog { background:#111; }");
+        auto* label = new QLabel;
+        label->setAlignment(Qt::AlignCenter);
+        QScreen* s = screen();
+        const QSize max = s ? s->availableGeometry().size() * 0.88 : QSize(1280, 800);
+        label->setPixmap(pm.scaled(max, Qt::KeepAspectRatio, Qt::SmoothTransformation));
+        auto* lay = new QVBoxLayout(&dlg);
+        lay->setContentsMargins(6, 6, 6, 6);
+        lay->addWidget(label);
+        dlg.resize(label->pixmap().size() + QSize(16, 16));
+        dlg.exec();
+    }
+
+    void showItemMenu(const QPoint& pos) {
+        auto* it = m_list->itemAt(pos);
+        if (!it)
+            return;
+        m_list->setCurrentItem(it);
+        const int idx = it->data(Qt::UserRole).toInt();
+        const auto& items = m_mgr->items();
+        if (idx < 0 || idx >= items.size())
+            return;
+        const ClipItem& c = items[idx];
+        QMenu menu(this);
+        menu.addAction(QStringLiteral("复制"), this, [this]() { doCopy(); });
+        if (c.kind == ClipItem::Text) {
+            menu.addAction(QStringLiteral("编辑文字…"), this, [this, idx]() {
+                const auto& all = m_mgr->items();
+                if (idx < 0 || idx >= all.size())
+                    return;
+                bool ok = false;
+                const QString text = QInputDialog::getMultiLineText(
+                    this, QStringLiteral("编辑文字"), QStringLiteral("内容："),
+                    all[idx].text, &ok);
+                if (ok && !text.trimmed().isEmpty())
+                    m_mgr->updateText(idx, text);
+            });
+        } else {
+            menu.addAction(QStringLiteral("查看大图…"), this,
+                           [this, path = c.imagePath]() { previewImage(path); });
+        }
+        menu.addAction(c.pinned ? QStringLiteral("取消固定") : QStringLiteral("固定"), this,
+                       [this, idx]() { m_mgr->togglePinned(idx); });
+        menu.addSeparator();
+        menu.addAction(QStringLiteral("删除"), this, [this, idx]() { m_mgr->removeItem(idx); });
+        menu.exec(m_list->viewport()->mapToGlobal(pos));
+    }
+
+    QListWidgetItem* makeRow(const ClipItem& c, int index) {
+        Q_UNUSED(c);
+        auto* item = new QListWidgetItem;
+        item->setData(Qt::UserRole, index);
+        item->setSizeHint(QSize(0, 58));
+        m_list->addItem(item);
+        return item;
+    }
+
     void doCopy() {
         auto* it = m_list->currentItem();
         if (!it)
@@ -153,16 +332,26 @@ private:
         close();
     }
     void updateButtons() {
-        const bool has = m_list->currentItem() != nullptr;
+        auto* it = m_list->currentItem();
+        const bool has = it != nullptr;
         m_copy->setEnabled(has);
         m_pin->setEnabled(has);
         m_del->setEnabled(has);
+        if (has) {
+            const int idx = it->data(Qt::UserRole).toInt();
+            const auto& items = m_mgr->items();
+            const bool pinned = idx >= 0 && idx < items.size() && items[idx].pinned;
+            m_pin->setText(pinned ? QStringLiteral("取消固定") : QStringLiteral("固定"));
+        } else {
+            m_pin->setText(QStringLiteral("固定"));
+        }
     }
 
     ClipboardManager* m_mgr;
     QLineEdit* m_search = nullptr;
     QListWidget* m_list = nullptr;
     QLabel* m_status = nullptr;
+    QTabBar* m_tabs = nullptr;
     QPushButton* m_copy = nullptr;
     QPushButton* m_pin = nullptr;
     QPushButton* m_del = nullptr;
@@ -228,6 +417,22 @@ void ClipboardManager::reloadSettings() {
 
 void ClipboardManager::startWatchers() {
     stopWatchers();
+#ifdef Q_OS_WIN
+    // Windows：Qt 内部监听 WM_CLIPBOARDUPDATE，别的程序复制也能收到事件，无需轮询。
+    connect(QApplication::clipboard(), &QClipboard::dataChanged, this, [this]() {
+        const QMimeData* mime = QApplication::clipboard()->mimeData();
+        if (!mime)
+            return;
+        if (mime->hasImage()) {
+            const QImage img = qvariant_cast<QImage>(mime->imageData());
+            if (!img.isNull())
+                addImage(img);
+        } else if (mime->hasText()) {
+            addText(mime->text());
+        }
+    });
+    return;
+#endif
     const QString wl = QStandardPaths::findExecutable("wl-paste");
     if (wl.isEmpty()) {
         // 没有 wl-clipboard 时退化为前台 QClipboard 监听（仅本应用有焦点时可靠）
@@ -638,6 +843,22 @@ void ClipboardManager::removeItem(int index) {
     m_hidden.insert(m_items[index].hash);
     deleteImageFile(m_items[index]);
     m_items.removeAt(index);
+    save();
+    emit changed();
+    refreshWindow();
+}
+
+void ClipboardManager::updateText(int index, const QString& text) {
+    if (index < 0 || index >= m_items.size())
+        return;
+    if (m_items[index].kind != ClipItem::Text)
+        return;
+    if (text.trimmed().isEmpty())
+        return;
+    m_items[index].text = text;
+    m_items[index].hash = QString::fromLatin1(
+        QCryptographicHash::hash(text.toUtf8(), QCryptographicHash::Sha256).toHex());
+    m_items[index].time = QDateTime::currentDateTime();
     save();
     emit changed();
     refreshWindow();
