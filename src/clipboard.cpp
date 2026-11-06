@@ -28,12 +28,36 @@
 #include <QScreen>
 #include <QStyledItemDelegate>
 #include <QPainter>
+#include <QWindow>
 
 #ifdef Q_OS_WIN
 #  ifndef NOMINMAX
 #    define NOMINMAX
 #  endif
 #  include <windows.h>
+
+// Windows 前台锁经常导致 SetForegroundWindow 失败（窗口显示但不接收键盘）。
+// 用 AttachThreadInput + Alt 解锁，确保剪贴板窗口真正拿到焦点。
+static void forceForeground(QWidget* w) {
+    if (!w)
+        return;
+    HWND hwnd = reinterpret_cast<HWND>(w->winId());
+    HWND fg = GetForegroundWindow();
+    const DWORD fgThread = fg ? GetWindowThreadProcessId(fg, nullptr) : 0;
+    const DWORD myThread = GetCurrentThreadId();
+    if (fgThread && fgThread != myThread)
+        AttachThreadInput(fgThread, myThread, TRUE);
+    keybd_event(VK_MENU, 0, 0, 0);
+    SetForegroundWindow(hwnd);
+    BringWindowToTop(hwnd);
+    SetActiveWindow(hwnd);
+    SetFocus(hwnd);
+    keybd_event(VK_MENU, 0, KEYEVENTF_KEYUP, 0);
+    if (fgThread && fgThread != myThread)
+        AttachThreadInput(fgThread, myThread, FALSE);
+    w->activateWindow();
+    w->raise();
+}
 #endif
 #include <QPushButton>
 #include <QLabel>
@@ -191,6 +215,7 @@ public:
         connect(m_tabs, &QTabBar::currentChanged, this, [this]() { refresh(); });
         connect(m_search, &QLineEdit::textChanged, this, [this]() { refresh(); });
         m_search->installEventFilter(this);
+        m_list->installEventFilter(this);
         connect(m_list, &QListWidget::itemDoubleClicked, this,
                 [this](QListWidgetItem* it) { activateItem(it); });
         m_list->setContextMenuPolicy(Qt::CustomContextMenu);
@@ -242,13 +267,28 @@ public:
 
 protected:
     bool eventFilter(QObject* o, QEvent* e) override {
-        if (o == m_search && e->type() == QEvent::KeyPress) {
-            auto* ke = static_cast<QKeyEvent*>(e);
-            if (ke->key() == Qt::Key_Down) {
+        if (o == m_search && e->type() == QEvent::KeyPress) {            auto* ke = static_cast<QKeyEvent*>(e);
+            if (ke->key() == Qt::Key_Down || ke->key() == Qt::Key_Up) {
                 if (m_list->count() > 0) {
                     m_list->setFocus();
-                    m_list->setCurrentRow(0);
+                    m_list->setCurrentRow(ke->key() == Qt::Key_Down ? 0 : m_list->count() - 1);
                 }
+                return true;
+            }
+            if ((ke->key() == Qt::Key_Left || ke->key() == Qt::Key_Right) &&
+                m_search->text().isEmpty()) {
+                switchTab(ke->key() == Qt::Key_Left ? -1 : 1);
+                return true;
+            }
+            if (ke->key() == Qt::Key_Return || ke->key() == Qt::Key_Enter) {
+                doPaste();
+                return true;
+            }
+        }
+        if (o == m_list && e->type() == QEvent::KeyPress) {
+            auto* ke = static_cast<QKeyEvent*>(e);
+            if (ke->key() == Qt::Key_Left || ke->key() == Qt::Key_Right) {
+                switchTab(ke->key() == Qt::Key_Left ? -1 : 1);
                 return true;
             }
             if (ke->key() == Qt::Key_Return || ke->key() == Qt::Key_Enter) {
@@ -264,6 +304,14 @@ protected:
             close();
             return;
         }
+        if (e->key() == Qt::Key_Left) {
+            switchTab(-1);
+            return;
+        }
+        if (e->key() == Qt::Key_Right) {
+            switchTab(1);
+            return;
+        }
         if (e->key() == Qt::Key_Return || e->key() == Qt::Key_Enter) {
             doPaste();
             return;
@@ -272,6 +320,17 @@ protected:
     }
 
 private:
+    void switchTab(int delta) {
+        if (!m_tabs || m_tabs->count() == 0)
+            return;
+        const int n = m_tabs->count();
+        m_tabs->setCurrentIndex((m_tabs->currentIndex() + delta + n) % n);
+        qInfo() << "clipboard switchTab" << delta << "->" << m_tabs->currentIndex();
+        m_list->setFocus();
+        if (m_list->count() > 0)
+            m_list->setCurrentRow(0);
+    }
+
     void activateItem(QListWidgetItem* it) {
         if (!it)
             return;
@@ -787,6 +846,49 @@ void ClipboardManager::load() {
     }
     for (const QJsonValue& v : doc.object().value("hidden").toArray())
         m_hidden.insert(v.toString());
+
+    // 旧版本没有设置 organizationName，历史存放在 %APPDATA%\SnipShot\clipboard；
+    // 首次运行新版时把旧记录合并过来，避免历史“消失”。
+    const QString legacy = QString::fromLocal8Bit(qgetenv("APPDATA")) + QStringLiteral("/SnipShot/clipboard");
+    if (QDir(legacy) != QDir(storeDir()) && QFileInfo::exists(legacy + "/clipboard.json")) {
+        QFile lf(legacy + "/clipboard.json");
+        if (lf.open(QIODevice::ReadOnly)) {
+            const QJsonDocument ldoc = QJsonDocument::fromJson(lf.readAll());
+            lf.close();
+            QSet<QString> have;
+            for (const ClipItem& it : m_items)
+                have.insert(it.hash);
+            bool changed = false;
+            for (const QJsonValue& v : ldoc.object().value("items").toArray()) {
+                const QJsonObject o = v.toObject();
+                ClipItem it;
+                it.kind = o.value("kind").toString() == "image" ? ClipItem::Image : ClipItem::Text;
+                it.text = o.value("text").toString();
+                it.imagePath = o.value("image").toString();
+                it.hash = o.value("hash").toString();
+                it.time = QDateTime::fromString(o.value("time").toString(), Qt::ISODate);
+                it.pinned = o.value("pinned").toBool();
+                if (!it.hash.isEmpty() && have.contains(it.hash))
+                    continue;
+                if (it.kind == ClipItem::Image) {
+                    if (!QFile::exists(it.imagePath))
+                        continue;
+                    const QString dst = storeDir() + "/" + QFileInfo(it.imagePath).fileName();
+                    if (!QFile::exists(dst))
+                        QFile::copy(it.imagePath, dst);
+                    it.imagePath = dst;
+                }
+                m_items.append(it);
+                if (!it.hash.isEmpty())
+                    have.insert(it.hash);
+                changed = true;
+            }
+            if (changed) {
+                qInfo() << "剪贴板：已合并旧版历史" << legacy;
+                save();
+            }
+        }
+    }
     enforceLimit();
 }
 
@@ -838,6 +940,9 @@ void ClipboardManager::openWindow() {
         m_window->show();
         m_window->raise();
         m_window->activateWindow();
+#ifdef Q_OS_WIN
+        forceForeground(m_window);
+#endif
         return;
     }
 #ifdef Q_OS_WIN
@@ -847,6 +952,9 @@ void ClipboardManager::openWindow() {
     m_window->show();
     m_window->raise();
     m_window->activateWindow();
+#ifdef Q_OS_WIN
+    forceForeground(m_window);
+#endif
 }
 
 void ClipboardManager::refreshWindow() {
