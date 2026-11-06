@@ -725,7 +725,8 @@ int main(int argc, char** argv) {
         qputenv("QT_QPA_PLATFORM", QByteArray("wayland"));
 
     QApplication app(argc, argv);
-    app.setApplicationName("SnipShot");
+    app.setOrganizationName(QStringLiteral("LECYWZA"));
+    app.setApplicationName(QStringLiteral("SnipShot"));
     app.setQuitOnLastWindowClosed(false);
 
     const QStringList args = QCoreApplication::arguments().mid(1);

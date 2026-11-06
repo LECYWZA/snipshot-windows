@@ -14,9 +14,11 @@ namespace Hotkeys {
 // 注册全部快捷键；problems 返回失败项（如被其它程序占用）
 bool installWindows(const Settings& st, const std::function<void(const QString&)>& onCommand,
                     QStringList* problems = nullptr);
-// 设置变更后重新注册（沿用上次的回调）
 bool reinstallWindows(const Settings& st, QStringList* problems = nullptr);
 void uninstallWindows();
+// 测试某个组合是否可用（不会影响已注册的热键）。
+// 已被本程序注册的组合也视为可用。
+bool testBinding(const QString& text, QString* error = nullptr);
 #endif
 bool installGnome(const Settings& st);   // Linux：注册到 GNOME
 QString executablePath();                 // 当前程序路径

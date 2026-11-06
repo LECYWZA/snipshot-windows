@@ -25,6 +25,14 @@ struct Settings {
     QString hkTranslate  = "Alt+q";
     QString hkOcr        = "Alt+w";
 #endif
+    bool hkSnipEnabled = true;
+    bool hkPinEnabled = true;
+    bool hkTogglePinsEnabled = true;
+    bool hkTranslateEnabled = true;
+    bool hkOcrEnabled = true;
+    bool hkClipboardEnabled = true;
+    bool hkRecordEnabled = true;
+    bool autoStart = false;        // 开机自启（当前用户 shell:startup 快捷方式）
     bool pinBorder       = true;   // 新贴图默认是否显示边框
 
     // 剪贴板管理器
@@ -52,4 +60,7 @@ struct Settings {
     void save() const;
     static QString defaultSaveDir();
     static QString defaultRecordDir();
+    // Windows：按设置创建/删除 shell:startup 快捷方式
+    static bool applyAutoStart(bool on, QString* error = nullptr);
+    static bool autoStartPresent();
 };

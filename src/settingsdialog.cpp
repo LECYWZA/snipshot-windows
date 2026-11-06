@@ -14,6 +14,147 @@
 #include <QComboBox>
 #include <QTabWidget>
 #include <QWidget>
+#include <QKeyEvent>
+#include <QMouseEvent>
+#include <QToolTip>
+#include <QStringList>
+
+HotkeyEdit::HotkeyEdit(QWidget* parent) : QLineEdit(parent) {
+    setReadOnly(true);
+    setPlaceholderText(QStringLiteral("点击后按下快捷键"));
+    setCursor(Qt::PointingHandCursor);
+    setToolTip(QStringLiteral("点击后直接按键盘组合（如 Ctrl+Alt+S）；Backspace 清除，Esc 取消"));
+}
+
+void HotkeyEdit::setBinding(const QString& text) {
+    m_binding = text;
+    setText(text.isEmpty() ? QStringLiteral("未设置") : text);
+}
+
+void HotkeyEdit::startCapture() {
+    m_old = m_binding;
+    m_capturing = true;
+    setText(QStringLiteral("请按下快捷键…"));
+    setFocus();
+    selectAll();
+}
+
+void HotkeyEdit::focusInEvent(QFocusEvent* e) {
+    QLineEdit::focusInEvent(e);
+    if (!m_capturing)
+        startCapture();
+}
+
+void HotkeyEdit::mousePressEvent(QMouseEvent* e) {
+    if (!m_capturing) {
+        startCapture();
+        e->accept();
+        return;
+    }
+    QLineEdit::mousePressEvent(e);
+}
+
+QString HotkeyEdit::keyName(int key, const QString& text) {
+    if (key >= Qt::Key_A && key <= Qt::Key_Z)
+        return QString(QChar(key));
+    if (key >= Qt::Key_0 && key <= Qt::Key_9)
+        return QString(QChar(key));
+    if (key >= Qt::Key_F1 && key <= Qt::Key_F24)
+        return QStringLiteral("F") + QString::number(key - Qt::Key_F1 + 1);
+    switch (key) {
+    case Qt::Key_Print: return QStringLiteral("PrintScreen");
+    case Qt::Key_Insert: return QStringLiteral("Insert");
+    case Qt::Key_Delete: return QStringLiteral("Delete");
+    case Qt::Key_Home: return QStringLiteral("Home");
+    case Qt::Key_End: return QStringLiteral("End");
+    case Qt::Key_PageUp: return QStringLiteral("PageUp");
+    case Qt::Key_PageDown: return QStringLiteral("PageDown");
+    case Qt::Key_Space: return QStringLiteral("Space");
+    case Qt::Key_Tab: return QStringLiteral("Tab");
+    case Qt::Key_Return:
+    case Qt::Key_Enter: return QStringLiteral("Enter");
+    case Qt::Key_Backspace: return QStringLiteral("Backspace");
+    case Qt::Key_Left: return QStringLiteral("Left");
+    case Qt::Key_Right: return QStringLiteral("Right");
+    case Qt::Key_Up: return QStringLiteral("Up");
+    case Qt::Key_Down: return QStringLiteral("Down");
+    case Qt::Key_Minus: return QStringLiteral("-");
+    case Qt::Key_Equal: return QStringLiteral("=");
+    case Qt::Key_BracketLeft: return QStringLiteral("[");
+    case Qt::Key_BracketRight: return QStringLiteral("]");
+    case Qt::Key_Backslash: return QStringLiteral("\\");
+    case Qt::Key_Semicolon: return QStringLiteral(";");
+    case Qt::Key_Apostrophe: return QStringLiteral("'");
+    case Qt::Key_Comma: return QStringLiteral(",");
+    case Qt::Key_Period: return QStringLiteral(".");
+    case Qt::Key_Slash: return QStringLiteral("/");
+    case Qt::Key_QuoteLeft: return QStringLiteral("`");
+    default: break;
+    }
+    if (!text.isEmpty() && text.at(0).isPrint())
+        return text.left(1).toUpper();
+    return QString();
+}
+
+void HotkeyEdit::keyPressEvent(QKeyEvent* e) {
+    if (!m_capturing) {
+        QLineEdit::keyPressEvent(e);
+        return;
+    }
+    const int key = e->key();
+    if (key == Qt::Key_Escape) {
+        stopCapture(true);
+        return;
+    }
+    if (key == Qt::Key_Backspace || key == Qt::Key_Delete) {
+        m_binding.clear();
+        m_capturing = false;
+        setText(QStringLiteral("未设置"));
+        clearFocus();
+        emit captured(QString());
+        return;
+    }
+    if (key == Qt::Key_Control || key == Qt::Key_Shift || key == Qt::Key_Alt ||
+        key == Qt::Key_Meta)
+        return;   // 等真正的键
+
+    const QString base = keyName(key, e->text());
+    if (base.isEmpty())
+        return;
+
+    QStringList mods;
+    const Qt::KeyboardModifiers m = e->modifiers();
+    if (m & Qt::ControlModifier)
+        mods << QStringLiteral("Ctrl");
+    if (m & Qt::AltModifier)
+        mods << QStringLiteral("Alt");
+    if (m & Qt::ShiftModifier)
+        mods << QStringLiteral("Shift");
+    if (m & Qt::MetaModifier)
+        mods << QStringLiteral("Win");
+
+    const bool printable = base.length() == 1 && base.at(0).isLetterOrNumber();
+    if (mods.isEmpty() && printable) {
+        QToolTip::showText(mapToGlobal(QPoint(0, height())),
+                           QStringLiteral("字母/数字需要搭配 Ctrl/Alt/Shift/Win"), this);
+        return;   // 继续等待
+    }
+
+    const QString binding = mods.isEmpty() ? base : (mods.join('+') + '+' + base);
+    m_binding = binding;
+    m_capturing = false;
+    setText(binding);
+    clearFocus();
+    emit captured(binding);
+}
+
+void HotkeyEdit::stopCapture(bool restore) {
+    m_capturing = false;
+    if (restore)
+        m_binding = m_old;
+    setText(m_binding.isEmpty() ? QStringLiteral("未设置") : m_binding);
+    clearFocus();
+}
 
 SettingsDialog::SettingsDialog(QWidget* parent) : QDialog(parent) {
     setWindowTitle(QStringLiteral("SnipShot 设置"));
@@ -52,29 +193,45 @@ SettingsDialog::SettingsDialog(QWidget* parent) : QDialog(parent) {
     m_pinBorder = new QCheckBox(QStringLiteral("新贴图默认显示边框"));
     m_pinBorder->setChecked(st.pinBorder);
     apiForm->addRow(QStringLiteral("贴图:"), m_pinBorder);
+#ifdef Q_OS_WIN
+    m_autoStart = new QCheckBox(QStringLiteral("开机自动启动（当前用户）"));
+    m_autoStart->setChecked(st.autoStart);
+    apiForm->addRow(QStringLiteral("启动:"), m_autoStart);
+#endif
     tabs->addTab(apiPage, QStringLiteral("API / 保存"));
 
     // --- 快捷键 ---
     auto* keysPage = new QWidget;
     auto* keysForm = new QFormLayout(keysPage);
-    m_hkSnip = new QLineEdit(st.hkSnip);
-    keysForm->addRow(QStringLiteral("截图:"), m_hkSnip);
-    m_hkPin = new QLineEdit(st.hkPin);
-    keysForm->addRow(QStringLiteral("固定贴图:"), m_hkPin);
-    m_hkToggle = new QLineEdit(st.hkTogglePins);
-    keysForm->addRow(QStringLiteral("隐藏/显示贴图:"), m_hkToggle);
-    m_hkTranslate = new QLineEdit(st.hkTranslate);
-    keysForm->addRow(QStringLiteral("截屏翻译:"), m_hkTranslate);
-    m_hkOcr = new QLineEdit(st.hkOcr);
-    keysForm->addRow(QStringLiteral("文字提取:"), m_hkOcr);
-    m_hkClipboard = new QLineEdit(st.hkClipboard);
-    keysForm->addRow(QStringLiteral("剪贴板历史:"), m_hkClipboard);
-    m_hkRecord = new QLineEdit(st.hkRecord);
-    keysForm->addRow(QStringLiteral("开始/停止录屏:"), m_hkRecord);
+    auto addHotkeyRow = [&](const QString& label, const QString& value, bool enabled,
+                            HotkeyEdit** edit, QCheckBox** check) {
+        auto* row = new QWidget;
+        auto* h = new QHBoxLayout(row);
+        h->setContentsMargins(0, 0, 0, 0);
+        h->setSpacing(8);
+        *check = new QCheckBox;
+        (*check)->setChecked(enabled);
+        (*check)->setToolTip(QStringLiteral("启用该快捷键"));
+        *edit = new HotkeyEdit;
+        (*edit)->setBinding(value);
+        h->addWidget(*check);
+        h->addWidget(*edit, 1);
+        keysForm->addRow(label, row);
+        connect(*edit, &HotkeyEdit::captured, this,
+                [this, edit](const QString& text) { checkHotkey(*edit, text); });
+    };
+    addHotkeyRow(QStringLiteral("截图:"), st.hkSnip, st.hkSnipEnabled, &m_hkSnip, &m_hkSnipEnabled);
+    addHotkeyRow(QStringLiteral("固定贴图:"), st.hkPin, st.hkPinEnabled, &m_hkPin, &m_hkPinEnabled);
+    addHotkeyRow(QStringLiteral("隐藏/显示贴图:"), st.hkTogglePins, st.hkTogglePinsEnabled, &m_hkToggle, &m_hkToggleEnabled);
+    addHotkeyRow(QStringLiteral("截屏翻译:"), st.hkTranslate, st.hkTranslateEnabled, &m_hkTranslate, &m_hkTranslateEnabled);
+    addHotkeyRow(QStringLiteral("文字提取:"), st.hkOcr, st.hkOcrEnabled, &m_hkOcr, &m_hkOcrEnabled);
+    addHotkeyRow(QStringLiteral("剪贴板历史:"), st.hkClipboard, st.hkClipboardEnabled, &m_hkClipboard, &m_hkClipboardEnabled);
+    addHotkeyRow(QStringLiteral("开始/停止录屏:"), st.hkRecord, st.hkRecordEnabled, &m_hkRecord, &m_hkRecordEnabled);
 #ifdef Q_OS_WIN
     const QString hintText = QStringLiteral(
-        "Windows 下由程序直接注册全局热键（RegisterHotKey）。\n"
-        "若提示被占用，换一个组合即可；修改后点“应用”自动生效。");
+        "点击输入框后直接按键盘组合即可录入（不是打字）。\n"
+        "左侧勾选表示启用；字母/数字必须搭配 Ctrl/Alt/Shift/Win。\n"
+        "提示被占用时可以重新录入，或仍然保存（该键不生效）。");
 #else
     const QString hintText = QStringLiteral(
         "Wayland 下第三方程序不能注册全局热键。\n"
@@ -188,19 +345,39 @@ void SettingsDialog::browseRecordDir() {
 }
 
 void SettingsDialog::applyAndClose() {
+    persist();
+#ifdef Q_OS_WIN
+    if (m_autoStart) {
+        QString err;
+        if (!Settings::applyAutoStart(m_autoStart->isChecked(), &err) && m_autoStart->isChecked())
+            QMessageBox::warning(this, QStringLiteral("SnipShot"),
+                                 QStringLiteral("创建开机启动快捷方式失败：") + err);
+    }
+#endif
+    accept();
+}
+
+void SettingsDialog::persist() {
     Settings st = Settings::load();
     st.apiBase = m_base->text().trimmed();
     st.apiKey = m_key->text().trimmed();
     st.model = m_model->text().trimmed();
     st.translateTarget = m_translateTarget->currentText();
     st.saveDir = m_dir->text().trimmed();
-    st.hkSnip = m_hkSnip->text().trimmed();
-    st.hkPin = m_hkPin->text().trimmed();
-    st.hkTogglePins = m_hkToggle->text().trimmed();
-    st.hkTranslate = m_hkTranslate->text().trimmed();
-    st.hkOcr = m_hkOcr->text().trimmed();
-    st.hkClipboard = m_hkClipboard->text().trimmed();
-    st.hkRecord = m_hkRecord->text().trimmed();
+    st.hkSnip = m_hkSnip->binding();
+    st.hkPin = m_hkPin->binding();
+    st.hkTogglePins = m_hkToggle->binding();
+    st.hkTranslate = m_hkTranslate->binding();
+    st.hkOcr = m_hkOcr->binding();
+    st.hkClipboard = m_hkClipboard->binding();
+    st.hkRecord = m_hkRecord->binding();
+    st.hkSnipEnabled = m_hkSnipEnabled->isChecked();
+    st.hkPinEnabled = m_hkPinEnabled->isChecked();
+    st.hkTogglePinsEnabled = m_hkToggleEnabled->isChecked();
+    st.hkTranslateEnabled = m_hkTranslateEnabled->isChecked();
+    st.hkOcrEnabled = m_hkOcrEnabled->isChecked();
+    st.hkClipboardEnabled = m_hkClipboardEnabled->isChecked();
+    st.hkRecordEnabled = m_hkRecordEnabled->isChecked();
     st.pinBorder = m_pinBorder->isChecked();
     st.clipboardEnabled = m_clipEnabled->isChecked();
     st.clipboardMax = m_clipMax->value();
@@ -210,20 +387,44 @@ void SettingsDialog::applyAndClose() {
     st.recordDir = m_recordDir->text().trimmed();
 #ifdef Q_OS_WIN
     st.ffmpegPath = m_ffmpeg->text().trimmed();
+    if (m_autoStart)
+        st.autoStart = m_autoStart->isChecked();
 #endif
     st.save();
-    accept();
+}
+
+void SettingsDialog::checkHotkey(HotkeyEdit* edit, const QString& text) {
+#ifdef Q_OS_WIN
+    if (text.trimmed().isEmpty())
+        return;
+    QString err;
+    if (Hotkeys::testBinding(text, &err))
+        return;
+    QMessageBox box(this);
+    box.setIcon(QMessageBox::Warning);
+    box.setWindowTitle(QStringLiteral("快捷键冲突"));
+    box.setText(QStringLiteral("%1 已被其他程序占用（%2）。").arg(text, err));
+    box.setInformativeText(QStringLiteral("换一个快捷键，还是仍然保存？"));
+    auto* retry = box.addButton(QStringLiteral("重新录入"), QMessageBox::AcceptRole);
+    box.addButton(QStringLiteral("仍然保存"), QMessageBox::RejectRole);
+    box.exec();
+    if (box.clickedButton() == retry)
+        edit->startCapture();
+#else
+    Q_UNUSED(edit);
+    Q_UNUSED(text);
+#endif
 }
 
 void SettingsDialog::registerHotkeys() {
-    applyAndClose();
+    persist();
     Settings st = Settings::load();
 #ifdef Q_OS_WIN
     QStringList problems;
     const bool ok = Hotkeys::reinstallWindows(st, &problems);
     if (ok)
         QMessageBox::information(this, QStringLiteral("SnipShot"),
-                                 QStringLiteral("全局快捷键已生效。"));
+                                 QStringLiteral("全局快捷键已按当前设置生效。"));
     else
         QMessageBox::warning(this, QStringLiteral("SnipShot"),
                              QStringLiteral("部分快捷键未能注册：\n") + problems.join('\n'));

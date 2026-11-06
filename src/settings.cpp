@@ -3,6 +3,9 @@
 #include <QSettings>
 #include <QStandardPaths>
 #include <QDir>
+#include <QProcess>
+#include <QCoreApplication>
+#include <QFileInfo>
 
 QString Settings::defaultSaveDir() {
     QString pic = QStandardPaths::writableLocation(QStandardPaths::PicturesLocation);
@@ -41,13 +44,20 @@ Settings Settings::load() {
     st.recordDir        = s.value("record/dir", defaultRecordDir()).toString();
     st.hkRecord         = s.value("hotkey/record", st.hkRecord).toString();
     st.ffmpegPath       = s.value("record/ffmpeg", st.ffmpegPath).toString();
+    st.hkSnipEnabled = s.value("hotkey/snipEnabled", st.hkSnipEnabled).toBool();
+    st.hkPinEnabled = s.value("hotkey/pinEnabled", st.hkPinEnabled).toBool();
+    st.hkTogglePinsEnabled = s.value("hotkey/togglePinsEnabled", st.hkTogglePinsEnabled).toBool();
+    st.hkTranslateEnabled = s.value("hotkey/translateEnabled", st.hkTranslateEnabled).toBool();
+    st.hkOcrEnabled = s.value("hotkey/ocrEnabled", st.hkOcrEnabled).toBool();
+    st.hkClipboardEnabled = s.value("hotkey/clipboardEnabled", st.hkClipboardEnabled).toBool();
+    st.hkRecordEnabled = s.value("hotkey/recordEnabled", st.hkRecordEnabled).toBool();
+    st.autoStart = s.value("general/autoStart", st.autoStart).toBool();
     return st;
 }
 
 void Settings::save() const {
     QSettings s;
-    s.setValue("api/base", apiBase);
-    s.setValue("api/key", apiKey);
+    s.setValue("api/base", apiBase);    s.setValue("api/key", apiKey);
     s.setValue("api/model", model);
     s.setValue("translate/target", translateTarget);
     s.setValue("save/dir", saveDir);
@@ -66,4 +76,67 @@ void Settings::save() const {
     s.setValue("record/dir", recordDir);
     s.setValue("hotkey/record", hkRecord);
     s.setValue("record/ffmpeg", ffmpegPath);
+    s.setValue("hotkey/snipEnabled", hkSnipEnabled);
+    s.setValue("hotkey/pinEnabled", hkPinEnabled);
+    s.setValue("hotkey/togglePinsEnabled", hkTogglePinsEnabled);
+    s.setValue("hotkey/translateEnabled", hkTranslateEnabled);
+    s.setValue("hotkey/ocrEnabled", hkOcrEnabled);
+    s.setValue("hotkey/clipboardEnabled", hkClipboardEnabled);
+    s.setValue("hotkey/recordEnabled", hkRecordEnabled);
+    s.setValue("general/autoStart", autoStart);
+}
+
+static QString autoStartLink() {
+    const QString base = QString::fromLocal8Bit(qgetenv("APPDATA"));
+    return base + QStringLiteral("/Microsoft/Windows/Start Menu/Programs/Startup/SnipShot.lnk");
+}
+
+bool Settings::autoStartPresent() {
+    return QFileInfo::exists(autoStartLink());
+}
+
+bool Settings::applyAutoStart(bool on, QString* error) {
+#ifdef Q_OS_WIN
+    const QString link = QDir::toNativeSeparators(autoStartLink());
+    const QString exe = QDir::toNativeSeparators(QCoreApplication::applicationFilePath());
+    const QString workDir = QDir::toNativeSeparators(QCoreApplication::applicationDirPath());
+    auto escape = [](QString s) { return s.replace('\'', QStringLiteral("''")); };
+
+    QString script;
+    if (on) {
+        QDir().mkpath(QFileInfo(link).absolutePath());
+        script = QStringLiteral(
+                     "$ws = New-Object -ComObject WScript.Shell; "
+                     "$sc = $ws.CreateShortcut('%1'); "
+                     "$sc.TargetPath = '%2'; "
+                     "$sc.WorkingDirectory = '%3'; "
+                     "$sc.IconLocation = '%2,0'; "
+                     "$sc.Save()")
+                     .arg(escape(link), escape(exe), escape(workDir));
+    } else {
+        script = QStringLiteral("Remove-Item -LiteralPath '%1' -Force -ErrorAction SilentlyContinue")
+                     .arg(escape(link));
+    }
+
+    QProcess p;
+    p.start(QStringLiteral("powershell"),
+            {QStringLiteral("-NoProfile"), QStringLiteral("-ExecutionPolicy"), QStringLiteral("Bypass"),
+             QStringLiteral("-Command"), script});
+    if (!p.waitForFinished(15000)) {
+        p.kill();
+        if (error)
+            *error = QStringLiteral("PowerShell 超时");
+        return false;
+    }
+    if (p.exitCode() != 0) {
+        if (error)
+            *error = QString::fromLocal8Bit(p.readAllStandardError()).trimmed();
+        return false;
+    }
+    return QFileInfo::exists(link) == on;
+#else
+    Q_UNUSED(on);
+    Q_UNUSED(error);
+    return true;
+#endif
 }

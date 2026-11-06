@@ -28,6 +28,7 @@ namespace {
 struct Binding {
     QString text;
     QString command;
+    bool enabled = true;
     UINT mods = 0;
     UINT vk = 0;
 };
@@ -57,6 +58,7 @@ public:
 WinHotkeyFilter* g_filter = nullptr;
 std::function<void(const QString&)> g_callback;
 QVector<int> g_registeredIds;
+QHash<QString, int> g_textToId;
 int g_nextId = 0x5340;
 
 QString vkName(UINT vk) {
@@ -170,6 +172,7 @@ void unregisterAll() {
     for (int id : g_registeredIds)
         UnregisterHotKey(nullptr, id);
     g_registeredIds.clear();
+    g_textToId.clear();
     if (g_filter)
         g_filter->idToCommand.clear();
 }
@@ -203,17 +206,19 @@ bool Hotkeys::installWindows(const Settings& st, const std::function<void(const 
     unregisterAll();
 
     QVector<Binding> list{
-        {st.hkSnip, "--snip", 0, 0},
-        {st.hkPin, "--pin", 0, 0},
-        {st.hkTogglePins, "--toggle-pins", 0, 0},
-        {st.hkTranslate, "--translate", 0, 0},
-        {st.hkOcr, "--ocr", 0, 0},
-        {st.hkClipboard, "--clipboard", 0, 0},
-        {st.hkRecord, "--record-toggle", 0, 0},
+        {st.hkSnip, "--snip", st.hkSnipEnabled, 0, 0},
+        {st.hkPin, "--pin", st.hkPinEnabled, 0, 0},
+        {st.hkTogglePins, "--toggle-pins", st.hkTogglePinsEnabled, 0, 0},
+        {st.hkTranslate, "--translate", st.hkTranslateEnabled, 0, 0},
+        {st.hkOcr, "--ocr", st.hkOcrEnabled, 0, 0},
+        {st.hkClipboard, "--clipboard", st.hkClipboardEnabled, 0, 0},
+        {st.hkRecord, "--record-toggle", st.hkRecordEnabled, 0, 0},
     };
 
     bool ok = true;
     for (Binding& b : list) {
+        if (!b.enabled)
+            continue;
         if (b.text.trimmed().isEmpty())
             continue;
         if (!parseBinding(b.text, &b)) {
@@ -225,6 +230,7 @@ bool Hotkeys::installWindows(const Settings& st, const std::function<void(const 
         const int id = g_nextId++;
         if (RegisterHotKey(nullptr, id, b.mods, b.vk)) {
             g_registeredIds.append(id);
+            g_textToId.insert(b.text.trimmed().toLower(), id);
             g_filter->idToCommand.insert(id, b.command);
             qInfo() << "热键已注册:" << b.text << "->" << b.command;
         } else {
@@ -235,6 +241,31 @@ bool Hotkeys::installWindows(const Settings& st, const std::function<void(const 
         }
     }
     return ok;
+}
+
+bool Hotkeys::testBinding(const QString& text, QString* error) {
+    if (error)
+        error->clear();
+    const QString key = text.trimmed().toLower();
+    if (key.isEmpty())
+        return true;
+    if (g_textToId.contains(key))
+        return true;   // 本程序已注册，视为可用
+    Binding b;
+    b.text = text;
+    if (!parseBinding(text, &b)) {
+        if (error)
+            *error = QStringLiteral("格式无法识别");
+        return false;
+    }
+    const int testId = 0x7F7F;
+    if (RegisterHotKey(nullptr, testId, b.mods, b.vk)) {
+        UnregisterHotKey(nullptr, testId);
+        return true;
+    }
+    if (error)
+        *error = winErrorText(GetLastError());
+    return false;
 }
 
 bool Hotkeys::reinstallWindows(const Settings& st, QStringList* problems) {

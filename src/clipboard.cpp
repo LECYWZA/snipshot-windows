@@ -28,6 +28,13 @@
 #include <QScreen>
 #include <QStyledItemDelegate>
 #include <QPainter>
+
+#ifdef Q_OS_WIN
+#  ifndef NOMINMAX
+#    define NOMINMAX
+#  endif
+#  include <windows.h>
+#endif
 #include <QPushButton>
 #include <QLabel>
 #include <QMessageBox>
@@ -183,6 +190,7 @@ public:
 
         connect(m_tabs, &QTabBar::currentChanged, this, [this]() { refresh(); });
         connect(m_search, &QLineEdit::textChanged, this, [this]() { refresh(); });
+        m_search->installEventFilter(this);
         connect(m_list, &QListWidget::itemDoubleClicked, this,
                 [this](QListWidgetItem* it) { activateItem(it); });
         m_list->setContextMenuPolicy(Qt::CustomContextMenu);
@@ -233,16 +241,32 @@ public:
     }
 
 protected:
+    bool eventFilter(QObject* o, QEvent* e) override {
+        if (o == m_search && e->type() == QEvent::KeyPress) {
+            auto* ke = static_cast<QKeyEvent*>(e);
+            if (ke->key() == Qt::Key_Down) {
+                if (m_list->count() > 0) {
+                    m_list->setFocus();
+                    m_list->setCurrentRow(0);
+                }
+                return true;
+            }
+            if (ke->key() == Qt::Key_Return || ke->key() == Qt::Key_Enter) {
+                doPaste();
+                return true;
+            }
+        }
+        return QDialog::eventFilter(o, e);
+    }
+
     void keyPressEvent(QKeyEvent* e) override {
         if (e->key() == Qt::Key_Escape) {
             close();
             return;
         }
         if (e->key() == Qt::Key_Return || e->key() == Qt::Key_Enter) {
-            if (m_list->hasFocus()) {
-                doCopy();
-                return;
-            }
+            doPaste();
+            return;
         }
         QDialog::keyPressEvent(e);
     }
@@ -258,7 +282,7 @@ private:
         if (items[idx].kind == ClipItem::Image)
             previewImage(items[idx].imagePath);
         else
-            doCopy();
+            doPaste();
     }
 
     void previewImage(const QString& path) {
@@ -330,6 +354,15 @@ private:
             return;
         m_mgr->copyItem(it->data(Qt::UserRole).toInt());
         close();
+    }
+
+    void doPaste() {
+        auto* it = m_list->currentItem();
+        if (!it && m_list->count() > 0)
+            it = m_list->item(0);
+        if (!it)
+            return;
+        m_mgr->pasteItem(it->data(Qt::UserRole).toInt());
     }
     void updateButtons() {
         auto* it = m_list->currentItem();
@@ -798,11 +831,18 @@ void ClipboardManager::openWindow() {
         start();
     if (m_window) {
         m_window->refresh();
+#ifdef Q_OS_WIN
+        if (!m_window->isVisible())
+            m_prevHwnd = quintptr(GetForegroundWindow());
+#endif
         m_window->show();
         m_window->raise();
         m_window->activateWindow();
         return;
     }
+#ifdef Q_OS_WIN
+    m_prevHwnd = quintptr(GetForegroundWindow());
+#endif
     m_window = new ClipboardWindow(this);
     m_window->show();
     m_window->raise();
@@ -826,6 +866,27 @@ void ClipboardManager::copyItem(int index) {
             QApplication::clipboard()->setImage(img);
     }
     emit changed();
+}
+
+void ClipboardManager::pasteItem(int index) {
+    if (index < 0 || index >= m_items.size())
+        return;
+    copyItem(index);
+    if (m_window)
+        m_window->hide();
+#ifdef Q_OS_WIN
+    if (m_prevHwnd) {
+        SetForegroundWindow(HWND(m_prevHwnd));
+        QTimer::singleShot(120, []() {
+            keybd_event(VK_CONTROL, 0, 0, 0);
+            keybd_event('V', 0, 0, 0);
+            keybd_event('V', 0, KEYEVENTF_KEYUP, 0);
+            keybd_event(VK_CONTROL, 0, KEYEVENTF_KEYUP, 0);
+        });
+    }
+#endif
+    if (m_window)
+        m_window->close();
 }
 
 void ClipboardManager::togglePinned(int index) {

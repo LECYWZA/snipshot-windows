@@ -38,6 +38,7 @@ public:
     void openWindow();
     const QList<ClipItem>& items() const { return m_items; }
     void copyItem(int index);
+    void pasteItem(int index);   // 复制并自动粘贴回之前的窗口
     void togglePinned(int index);
     void removeItem(int index);
     void updateText(int index, const QString& text);
@@ -81,4 +82,5 @@ private:
     bool m_running = false;
     bool m_savePending = false;
     bool m_syncing = false;
+    quintptr m_prevHwnd = 0;   // 打开剪贴板前的前台窗口（用于回车粘贴）
 };
