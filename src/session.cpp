@@ -442,6 +442,10 @@ void CaptureSession::finishAnnotation() {
         if (a.tool != Text && a.rect.width() < 2 && a.rect.height() < 2) {
             m_anns.removeLast();
             m_selected = -1;
+        } else if (a.tool == Pen) {
+            // 画笔即时生效：固化并取消选中，不显示任何操作按钮；不满意用撤销
+            a.locked = true;
+            m_selected = -1;
         }
     }
     emit changed();
@@ -531,6 +535,8 @@ int CaptureSession::handleAt(const QPoint& global) const {
     const Ann& a = m_anns[idx];
     if (a.locked)
         return NoHandle;
+    if (a.tool == Pen)
+        return NoHandle;   // 画笔即时生效，不提供任何手柄
     // 画笔/箭头是线条类，不给矩形对角框和 8 个缩放手柄，只保留确认/旋转/删除
     const bool frameTools = a.tool == Rect || a.tool == Ellipse || a.tool == Mosaic || a.tool == Text;
     const QPointF c = rotCenter(a);
@@ -647,7 +653,8 @@ void CaptureSession::undo() {
         return;
     }
     for (int i = m_anns.size() - 1; i >= 0; --i) {
-        if (m_anns[i].locked)
+        // 画笔即时生效但可用撤销移除；已打勾确认的其它标注不再被撤销
+        if (m_anns[i].locked && m_anns[i].tool != Pen)
             continue;
         m_anns.removeAt(i);
         m_selected = -1;
@@ -938,6 +945,8 @@ void CaptureSession::paintHandles(QPainter& p, QScreen* screen) const {
     const Ann& a = m_anns[idx];
     if (a.locked)
         return;
+    if (a.tool == Pen)
+        return;   // 画笔不做选中编辑
     const bool frameTools = a.tool == Rect || a.tool == Ellipse || a.tool == Mosaic || a.tool == Text;
     const QPointF c = rotCenter(a);
     p.save();
