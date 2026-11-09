@@ -97,11 +97,18 @@ private:
     void preview(const QString& path);
     void debugShot(const QString& path);
     void debugGrab(const QString& path);
+    void refreshMenuLabels();
 
     QSystemTrayIcon* m_tray = nullptr;
     ClipboardManager* m_clipboard = nullptr;
     ScreenRecorder* m_recorder = nullptr;
     QAction* m_recordAction = nullptr;
+    QAction* m_actSnip = nullptr;
+    QAction* m_actPin = nullptr;
+    QAction* m_actToggle = nullptr;
+    QAction* m_actTranslate = nullptr;
+    QAction* m_actOcr = nullptr;
+    QAction* m_actClipboard = nullptr;
     CaptureSession* m_session = nullptr;
     QList<QPointer<OverlayView>> m_views;
     QPointer<OverlayView> m_activeView;
@@ -162,19 +169,20 @@ void App::init(const QStringList& args) {
     });
 
     auto* menu = new QMenu;
-    const Settings hotkeySettings = Settings::load();
-    menu->addAction(QStringLiteral("截图 (%1)").arg(hotkeySettings.hkSnip), this, &App::snip);
-    menu->addAction(QStringLiteral("固定贴图 (%1)").arg(hotkeySettings.hkPin), this, &App::pinLast);
-    menu->addAction(QStringLiteral("隐藏/显示贴图 (%1)").arg(hotkeySettings.hkTogglePins), this, &App::togglePins);
+    m_actSnip = menu->addAction(QStringLiteral("截图"), this, &App::snip);
+    m_actPin = menu->addAction(QStringLiteral("固定贴图"), this, &App::pinLast);
+    m_actToggle = menu->addAction(QStringLiteral("隐藏/显示贴图"), this, &App::togglePins);
     menu->addSeparator();
-    menu->addAction(QStringLiteral("截屏翻译 (%1)").arg(hotkeySettings.hkTranslate), this, &App::translate);
-    menu->addAction(QStringLiteral("文字提取 (%1)").arg(hotkeySettings.hkOcr), this, &App::ocr);
+    m_actTranslate = menu->addAction(QStringLiteral("截屏翻译"), this, &App::translate);
+    m_actOcr = menu->addAction(QStringLiteral("文字提取"), this, &App::ocr);
     menu->addSeparator();
-    menu->addAction(QStringLiteral("剪贴板历史 (%1)").arg(hotkeySettings.hkClipboard), this, &App::showClipboard);
-    m_recordAction = menu->addAction(QStringLiteral("开始录屏 (%1)").arg(hotkeySettings.hkRecord), this, &App::toggleRecording);
+    m_actClipboard = menu->addAction(QStringLiteral("剪贴板历史"), this, &App::showClipboard);
+    m_recordAction = menu->addAction(QStringLiteral("开始录屏"), this, &App::toggleRecording);
     menu->addSeparator();
     menu->addAction(QStringLiteral("设置…"), this, &App::settings);
     menu->addAction(QStringLiteral("退出"), qApp, &QApplication::quit);
+    connect(menu, &QMenu::aboutToShow, this, &App::refreshMenuLabels);
+    refreshMenuLabels();
     m_tray->setContextMenu(menu);
     m_tray->show();
 
@@ -201,6 +209,32 @@ void App::init(const QStringList& args) {
     }
 
     qInfo() << "SnipShot 已常驻. 平台:" << QGuiApplication::platformName();
+}
+
+void App::refreshMenuLabels() {
+    const Settings st = Settings::load();
+    auto label = [](const QString& name, const QString& key, bool enabled) {
+        return (enabled && !key.trimmed().isEmpty())
+                   ? QStringLiteral("%1 (%2)").arg(name, key)
+                   : name;
+    };
+    if (m_actSnip)
+        m_actSnip->setText(label(QStringLiteral("截图"), st.hkSnip, st.hkSnipEnabled));
+    if (m_actPin)
+        m_actPin->setText(label(QStringLiteral("固定贴图"), st.hkPin, st.hkPinEnabled));
+    if (m_actToggle)
+        m_actToggle->setText(label(QStringLiteral("隐藏/显示贴图"), st.hkTogglePins, st.hkTogglePinsEnabled));
+    if (m_actTranslate)
+        m_actTranslate->setText(label(QStringLiteral("截屏翻译"), st.hkTranslate, st.hkTranslateEnabled));
+    if (m_actOcr)
+        m_actOcr->setText(label(QStringLiteral("文字提取"), st.hkOcr, st.hkOcrEnabled));
+    if (m_actClipboard)
+        m_actClipboard->setText(label(QStringLiteral("剪贴板历史"), st.hkClipboard, st.hkClipboardEnabled));
+    if (m_recordAction) {
+        const QString base = (m_recorder && m_recorder->isRecording()) ? QStringLiteral("停止录屏")
+                                                                      : QStringLiteral("开始录屏");
+        m_recordAction->setText(label(base, st.hkRecord, st.hkRecordEnabled));
+    }
 }
 
 void App::handleCommand(const QString& cmd) {

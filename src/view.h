@@ -46,6 +46,8 @@ private:
     void syncEditor();
     void commitEditor();
     void destroyEditor();
+    void updateCursorAt(const QPoint& global);
+    void updateHover(const QPoint& local);
 
     CaptureSession* m_session = nullptr;
     QScreen* m_screen = nullptr;
@@ -58,6 +60,10 @@ private:
     bool m_selResizing = false;
     int m_selHandle = 0;
     int m_handle = 0;
+    int m_hoverToolIdx = -1;
+    int m_hoverActionIdx = -1;
+    int m_pressedToolIdx = -1;
+    int m_pressedActionIdx = -1;
     QPoint m_lastGlobal;
     QRect m_prevSelection;
     QString m_prevState;

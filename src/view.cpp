@@ -102,6 +102,89 @@ QRect OverlayView::toolbarRect(bool tools) const {
     return toolbarRectFor(m_session->selection(), tools);
 }
 
+static Qt::CursorShape handleCursor(int h) {
+    switch (h) {
+    case CaptureSession::TopLeft:
+    case CaptureSession::BottomRight:
+        return Qt::SizeFDiagCursor;
+    case CaptureSession::TopRight:
+    case CaptureSession::BottomLeft:
+        return Qt::SizeBDiagCursor;
+    case CaptureSession::Left:
+    case CaptureSession::Right:
+        return Qt::SizeHorCursor;
+    case CaptureSession::Top:
+    case CaptureSession::Bottom:
+        return Qt::SizeVerCursor;
+    case CaptureSession::Rotate:
+        return Qt::PointingHandCursor;
+    case CaptureSession::Check:
+        return Qt::PointingHandCursor;
+    default:
+        return Qt::ArrowCursor;
+    }
+}
+
+void OverlayView::updateCursorAt(const QPoint& g) {
+    if (!m_session) {
+        setCursor(Qt::CrossCursor);
+        return;
+    }
+    if (m_session->pickerActive()) {
+        setCursor(Qt::CrossCursor);
+        return;
+    }
+    if (m_session->hasSelection()) {
+        if (toolbarRect(true).contains(g) || toolbarRect(false).contains(g)) {
+            setCursor(Qt::ArrowCursor);
+            return;
+        }
+        const int sh = m_session->selectionHandleAt(g);
+        if (sh != CaptureSession::NoHandle) {
+            setCursor(handleCursor(sh));
+            return;
+        }
+        const int h = m_session->handleAt(g);
+        if (h != CaptureSession::NoHandle) {
+            setCursor(handleCursor(h));
+            return;
+        }
+        if (m_session->selection().contains(g)) {
+            if (m_session->hasResult()) {
+                setCursor(Qt::ArrowCursor);
+                return;
+            }
+            switch (m_session->tool()) {
+            case CaptureSession::Move:
+                setCursor(Qt::SizeAllCursor);
+                break;
+            case CaptureSession::Text:
+                setCursor(Qt::IBeamCursor);
+                break;
+            default:
+                setCursor(Qt::CrossCursor);
+                break;
+            }
+            return;
+        }
+    }
+    setCursor(Qt::CrossCursor);
+}
+
+void OverlayView::updateHover(const QPoint& local) {
+    if (!m_session || !m_session->hasSelection())
+        return;
+    const int t = toolbarHit(local, true);
+    const int a = toolbarHit(local, false);
+    if (t == m_hoverToolIdx && a == m_hoverActionIdx)
+        return;
+    m_hoverToolIdx = t;
+    m_hoverActionIdx = a;
+    const QRect scr = m_session->screenRect(m_screen);
+    update(toolbarRect(true).translated(-scr.topLeft()));
+    update(toolbarRect(false).translated(-scr.topLeft()));
+}
+
 QRect OverlayView::toolbarRectFor(const QRect& sel, bool tools) const {
     const QRect scr = m_session->screenRect(m_screen);
     const int bw = 52, bh = 28, gap = 4;
@@ -178,6 +261,8 @@ void OverlayView::toolbarClick(int idx, bool tools) {
     default:
         break;
     }
+    if (tools)
+        updateCursorAt(QCursor::pos());
 }
 
 void OverlayView::showColorMenu() {
@@ -222,7 +307,15 @@ void OverlayView::drawToolbar(QPainter& p, bool tools) {
             else if (i == 7)
                 active = m_session->pickerActive();
         }
-        p.fillRect(r, active ? kBtnSel : QColor(60, 60, 60));
+        const bool hovered = tools ? (i == m_hoverToolIdx) : (i == m_hoverActionIdx);
+        const bool pressed = tools ? (i == m_pressedToolIdx) : (i == m_pressedActionIdx);
+        const QColor bg = active   ? kBtnSel
+                          : pressed ? QColor(0, 110, 190)
+                          : hovered ? QColor(0, 160, 255, 190)
+                                    : QColor(60, 60, 60);
+        p.setPen(Qt::NoPen);
+        p.setBrush(bg);
+        p.drawRoundedRect(r.adjusted(0, 0, -1, -1), 4, 4);
         if (tools && i == 8) {
             p.fillRect(r.adjusted(6, 6, -6, -6), m_session->color());
             p.setPen(QPen(Qt::white, 1));
@@ -328,6 +421,8 @@ void OverlayView::onSessionChanged() {
     if (!local.isEmpty())
         update(local);
     syncEditor();
+    if (QGuiApplication::mouseButtons() == Qt::NoButton)
+        updateCursorAt(QCursor::pos());
 }
 
 void OverlayView::paintEvent(QPaintEvent* ev) {
@@ -410,12 +505,14 @@ void OverlayView::mousePressEvent(QMouseEvent* e) {
 
     const int tIdx = toolbarHit(e->position().toPoint(), true);
     if (tIdx >= 0) {
-        toolbarClick(tIdx, true);
+        m_pressedToolIdx = tIdx;
+        update(toolbarRect(true).translated(-m_session->screenRect(m_screen).topLeft()));
         return;
     }
     const int aIdx = toolbarHit(e->position().toPoint(), false);
     if (aIdx >= 0) {
-        toolbarClick(aIdx, false);
+        m_pressedActionIdx = aIdx;
+        update(toolbarRect(false).translated(-m_session->screenRect(m_screen).topLeft()));
         return;
     }
     if (m_session->pickerActive()) {
@@ -494,6 +591,12 @@ void OverlayView::mousePressEvent(QMouseEvent* e) {
 
 void OverlayView::mouseMoveEvent(QMouseEvent* e) {
     const QPoint g = toGlobal(e->position().toPoint());
+    const bool dragging = m_session->selecting() || m_session->drawing() || m_moving ||
+                          m_resizing || m_rotating || m_selMoving || m_selResizing;
+    if (!dragging) {
+        updateHover(e->position().toPoint());
+        updateCursorAt(g);
+    }
     if (m_session->pickerActive()) {
         m_session->setPickerPos(g);
         return;
@@ -531,6 +634,28 @@ void OverlayView::mouseMoveEvent(QMouseEvent* e) {
 void OverlayView::mouseReleaseEvent(QMouseEvent* e) {
     if (e->button() != Qt::LeftButton)
         return;
+    const QPoint local = e->position().toPoint();
+    const QRect scr = m_session->screenRect(m_screen);
+    if (m_pressedToolIdx >= 0) {
+        const int pressed = m_pressedToolIdx;
+        m_pressedToolIdx = -1;
+        if (m_session->hasSelection())
+            update(toolbarRect(true).translated(-scr.topLeft()));
+        if (toolbarHit(local, true) == pressed) {
+            toolbarClick(pressed, true);
+            return;
+        }
+    }
+    if (m_pressedActionIdx >= 0) {
+        const int pressed = m_pressedActionIdx;
+        m_pressedActionIdx = -1;
+        if (m_session->hasSelection())
+            update(toolbarRect(false).translated(-scr.topLeft()));
+        if (toolbarHit(local, false) == pressed) {
+            toolbarClick(pressed, false);
+            return;
+        }
+    }
     if (m_session->selecting()) {
         m_session->endSelection();
     } else if (m_session->drawing()) {
@@ -541,6 +666,7 @@ void OverlayView::mouseReleaseEvent(QMouseEvent* e) {
     m_rotating = false;
     m_selMoving = false;
     m_selResizing = false;
+    updateCursorAt(toGlobal(local));
 }
 
 void OverlayView::keyPressEvent(QKeyEvent* e) {
