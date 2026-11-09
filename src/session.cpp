@@ -537,8 +537,8 @@ int CaptureSession::handleAt(const QPoint& global) const {
         return NoHandle;
     if (a.tool == Pen)
         return NoHandle;   // 画笔即时生效，不提供任何手柄
-    // 画笔/箭头是线条类，不给矩形对角框和 8 个缩放手柄，只保留确认/旋转/删除
-    const bool frameTools = a.tool == Rect || a.tool == Ellipse || a.tool == Mosaic || a.tool == Text;
+    // 画笔不提供矩形框；其它标注（含箭头）保留缩放手柄
+    const bool frameTools = a.tool == Rect || a.tool == Ellipse || a.tool == Arrow || a.tool == Mosaic || a.tool == Text;
     const QPointF c = rotCenter(a);
     const QPointF tl = rotatePoint(a.rect.topLeft(), c, a.rotation);
     const QPointF tr = rotatePoint(a.rect.topRight(), c, a.rotation);
@@ -609,9 +609,22 @@ void CaptureSession::resizeSelected(int handle, const QPoint& global) {
     case Right: r.setRight(local.x()); break;
     default: break;
     }
+    const QRectF old = a.rect;
     a.rect = r.normalized();
-    a.a = a.rect.topLeft();
-    a.b = a.rect.bottomRight();
+    if (a.tool == Arrow && old.width() > 0 && old.height() > 0) {
+        // 箭头按原比例映射端点，避免缩放时方向翻转
+        auto mapPoint = [&](const QPointF& p) {
+            const qreal fx = (p.x() - old.left()) / old.width();
+            const qreal fy = (p.y() - old.top()) / old.height();
+            return QPointF(a.rect.left() + fx * a.rect.width(),
+                           a.rect.top() + fy * a.rect.height());
+        };
+        a.a = mapPoint(a.a);
+        a.b = mapPoint(a.b);
+    } else {
+        a.a = a.rect.topLeft();
+        a.b = a.rect.bottomRight();
+    }
     emit changed();
 }
 
@@ -947,7 +960,7 @@ void CaptureSession::paintHandles(QPainter& p, QScreen* screen) const {
         return;
     if (a.tool == Pen)
         return;   // 画笔不做选中编辑
-    const bool frameTools = a.tool == Rect || a.tool == Ellipse || a.tool == Mosaic || a.tool == Text;
+    const bool frameTools = a.tool == Rect || a.tool == Ellipse || a.tool == Arrow || a.tool == Mosaic || a.tool == Text;
     const QPointF c = rotCenter(a);
     p.save();
     p.translate(-sr.topLeft());
