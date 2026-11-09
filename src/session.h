@@ -38,6 +38,9 @@ public:
         QString text;
         qreal rotation = 0;   // 度
         bool locked = false;  // 打勾确认后固化，不再参与选中/编辑
+        bool bold = false;
+        bool italic = false;
+        bool outline = true;  // 文字白色描边
     };
 
     explicit CaptureSession(const QImage& fullImage, const QList<ScreenShot>& shots,
@@ -114,6 +117,17 @@ public:
     void commitSelected();   // 打勾：固化当前标注
     void deleteSelected();   // 删除当前选中的标注
 
+    // 文字样式（应用到选中的文字，或作为新文字的默认值）
+    void toggleTextBold();
+    void toggleTextItalic();
+    void toggleTextOutline();
+    bool textBold() const;
+    bool textItalic() const;
+    bool textOutline() const;
+
+    // 滚轮缩放选中的标注（文字同时缩放字号）
+    void scaleSelected(qreal factor);
+
     QImage currentResult() const;   // 选区 + 标注
     QRect selectionRect() const { return selection(); }
     void requestAction(int action);
@@ -172,6 +186,9 @@ private:
 
     bool m_picker = false;
     QPoint m_pickerPos;
+    bool m_textBold = false;
+    bool m_textItalic = false;
+    bool m_textOutline = true;
 
     bool m_selMoving = false;
     bool m_selResizing = false;

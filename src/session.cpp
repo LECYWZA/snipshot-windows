@@ -469,6 +469,9 @@ void CaptureSession::beginText(const QPoint& global) {
     a.b = a.rect.bottomRight();
     a.color = m_color;
     a.width = qMax(12.0, m_width * 6.0);
+    a.bold = m_textBold;
+    a.italic = m_textItalic;
+    a.outline = m_textOutline;
     m_anns.append(a);
     m_selected = m_anns.size() - 1;
     m_editing = m_selected;
@@ -707,6 +710,90 @@ void CaptureSession::deleteSelected() {
     emit changed();
 }
 
+static int textStyleIndex(int editing, int selected, const QList<CaptureSession::Ann>& anns) {
+    int idx = editing >= 0 ? editing : selected;
+    if (idx < 0 || idx >= anns.size() || anns[idx].tool != CaptureSession::Text)
+        return -1;
+    return idx;
+}
+
+bool CaptureSession::textBold() const {
+    const int idx = textStyleIndex(m_editing, m_selected, m_anns);
+    return idx >= 0 ? m_anns[idx].bold : m_textBold;
+}
+
+bool CaptureSession::textItalic() const {
+    const int idx = textStyleIndex(m_editing, m_selected, m_anns);
+    return idx >= 0 ? m_anns[idx].italic : m_textItalic;
+}
+
+bool CaptureSession::textOutline() const {
+    const int idx = textStyleIndex(m_editing, m_selected, m_anns);
+    return idx >= 0 ? m_anns[idx].outline : m_textOutline;
+}
+
+void CaptureSession::toggleTextBold() {
+    m_textBold = !m_textBold;
+    const int idx = textStyleIndex(m_editing, m_selected, m_anns);
+    if (idx >= 0)
+        m_anns[idx].bold = m_textBold;
+    emit changed();
+}
+
+void CaptureSession::toggleTextItalic() {
+    m_textItalic = !m_textItalic;
+    const int idx = textStyleIndex(m_editing, m_selected, m_anns);
+    if (idx >= 0)
+        m_anns[idx].italic = m_textItalic;
+    emit changed();
+}
+
+void CaptureSession::toggleTextOutline() {
+    m_textOutline = !m_textOutline;
+    const int idx = textStyleIndex(m_editing, m_selected, m_anns);
+    if (idx >= 0)
+        m_anns[idx].outline = m_textOutline;
+    emit changed();
+}
+
+void CaptureSession::scaleSelected(qreal factor) {
+    const int idx = textStyleIndex(m_editing, m_selected, m_anns) >= 0 && editingText()
+                        ? m_editing
+                        : m_selected;
+    if (idx < 0 || idx >= m_anns.size())
+        return;
+    Ann& a = m_anns[idx];
+    if (a.locked || a.tool == Pen)
+        return;
+    const QPointF c = rotCenter(a);
+    const QRectF old = a.rect;
+    qreal w = old.width() * factor;
+    qreal h = old.height() * factor;
+    const qreal minW = a.tool == Text ? 60.0 : 10.0;
+    const qreal minH = a.tool == Text ? 24.0 : 10.0;
+    w = qMax(minW, w);
+    h = qMax(minH, h);
+    const QRectF nr(c.x() - w / 2.0, c.y() - h / 2.0, w, h);
+    if (a.tool == Arrow && old.width() > 0 && old.height() > 0) {
+        auto mapPoint = [&](const QPointF& p) {
+            return QPointF(nr.left() + (p.x() - old.left()) / old.width() * nr.width(),
+                           nr.top() + (p.y() - old.top()) / old.height() * nr.height());
+        };
+        a.a = mapPoint(a.a);
+        a.b = mapPoint(a.b);
+    } else {
+        a.a = nr.topLeft();
+        a.b = nr.bottomRight();
+        for (QPointF& p : a.path)
+            p = QPointF(nr.left() + (p.x() - old.left()) / qMax(1.0, old.width()) * nr.width(),
+                        nr.top() + (p.y() - old.top()) / qMax(1.0, old.height()) * nr.height());
+    }
+    if (a.tool == Text)
+        a.width = qBound(8.0, a.width * factor, 200.0);
+    a.rect = nr;
+    emit changed();
+}
+
 void CaptureSession::setPicker(bool on) {
     m_picker = on;
     if (on) {
@@ -840,7 +927,21 @@ void CaptureSession::drawAnn(QPainter& p, const Ann& a, bool editing, const QIma
         if (!editing) {
             QFont f;
             f.setPixelSize(qMax(10, qRound(a.width)));
+            f.setBold(a.bold);
+            f.setItalic(a.italic);
             p.setFont(f);
+            if (a.outline && !a.text.isEmpty()) {
+                const int off = qMax(1, qRound(a.width / 14.0));
+                p.setPen(Qt::white);
+                for (int dx = -off; dx <= off; dx += off) {
+                    for (int dy = -off; dy <= off; dy += off) {
+                        if (dx == 0 && dy == 0)
+                            continue;
+                        p.drawText(a.rect.translated(dx, dy),
+                                   Qt::AlignLeft | Qt::AlignTop | Qt::TextWordWrap, a.text);
+                    }
+                }
+            }
             p.setPen(a.color);
             p.drawText(a.rect, Qt::AlignLeft | Qt::AlignTop | Qt::TextWordWrap, a.text);
         }

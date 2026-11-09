@@ -5,6 +5,7 @@
 #include <QPainter>
 #include <QMouseEvent>
 #include <QKeyEvent>
+#include <QWheelEvent>
 #include <QTextEdit>
 #include <QColorDialog>
 #include <QMenu>
@@ -24,7 +25,8 @@ static const QColor kBtnSel(0, 120, 215);
 static const QStringList kToolNames{
     QStringLiteral("移动"), QStringLiteral("矩形"), QStringLiteral("椭圆"), QStringLiteral("箭头"),
     QStringLiteral("画笔"), QStringLiteral("马赛克"), QStringLiteral("文字"), QStringLiteral("取色"),
-    QStringLiteral("颜色"), QStringLiteral("－"), QStringLiteral("＋")
+    QStringLiteral("颜色"), QStringLiteral("－"), QStringLiteral("＋"),
+    QStringLiteral("B"), QStringLiteral("I"), QStringLiteral("A")
 };
 static const QStringList kActionNames{
     QStringLiteral("保存"), QStringLiteral("复制"), QStringLiteral("贴图"),
@@ -259,6 +261,15 @@ void OverlayView::toolbarClick(int idx, bool tools) {
     case 10:
         m_session->setWidth(m_session->width() + 1.0);
         break;
+    case 11:
+        m_session->toggleTextBold();
+        break;
+    case 12:
+        m_session->toggleTextItalic();
+        break;
+    case 13:
+        m_session->toggleTextOutline();
+        break;
     default:
         break;
     }
@@ -307,6 +318,12 @@ void OverlayView::drawToolbar(QPainter& p, bool tools) {
                 active = m_session->tool() == CaptureSession::Tool(i) && !m_session->pickerActive();
             else if (i == 7)
                 active = m_session->pickerActive();
+            else if (i == 11)
+                active = m_session->textBold();
+            else if (i == 12)
+                active = m_session->textItalic();
+            else if (i == 13)
+                active = m_session->textOutline();
         }
         const bool hovered = tools ? (i == m_hoverToolIdx) : (i == m_hoverActionIdx);
         const bool pressed = tools ? (i == m_pressedToolIdx) : (i == m_pressedActionIdx);
@@ -325,6 +342,10 @@ void OverlayView::drawToolbar(QPainter& p, bool tools) {
             p.setPen(Qt::white);
             QFont f = p.font();
             f.setPixelSize(12);
+            if (tools && i == 11)
+                f.setBold(true);
+            if (tools && i == 12)
+                f.setItalic(true);
             p.setFont(f);
             p.drawText(r, Qt::AlignCenter, names[i]);
         }
@@ -735,13 +756,43 @@ bool OverlayView::eventFilter(QObject* o, QEvent* e) {
             m_session->cancelEditingText();
             return true;
         }
+        if ((ke->key() == Qt::Key_B || ke->key() == Qt::Key_I) &&
+            (ke->modifiers() & Qt::ControlModifier)) {
+            if (ke->key() == Qt::Key_B)
+                m_session->toggleTextBold();
+            else
+                m_session->toggleTextItalic();
+            return true;
+        }
         if ((ke->key() == Qt::Key_Return || ke->key() == Qt::Key_Enter)
             && (ke->modifiers() & Qt::ControlModifier)) {
             m_session->commitEditingText();
             return true;
         }
     }
+    if (o == m_editor && e->type() == QEvent::Wheel) {
+        auto* we = static_cast<QWheelEvent*>(e);
+        const int d = we->angleDelta().y();
+        if (d != 0) {
+            m_session->scaleSelected(d > 0 ? 1.05 : 0.95);
+            return true;
+        }
+    }
     return QWidget::eventFilter(o, e);
+}
+
+void OverlayView::wheelEvent(QWheelEvent* e) {
+    const int d = e->angleDelta().y();
+    if (d == 0) {
+        QWidget::wheelEvent(e);
+        return;
+    }
+    if (m_session->editingText() || m_session->selectedAnn()) {
+        m_session->scaleSelected(d > 0 ? 1.05 : 0.95);
+        e->accept();
+        return;
+    }
+    QWidget::wheelEvent(e);
 }
 
 void OverlayView::syncEditor() {
@@ -770,6 +821,10 @@ void OverlayView::syncEditor() {
     const CaptureSession::Ann* ann = m_session->selectedAnn();
     QFont f;
     f.setPixelSize(ann ? qMax(10, qRound(ann->width)) : 18);
+    if (ann) {
+        f.setBold(ann->bold);
+        f.setItalic(ann->italic);
+    }
     m_editor->setFont(f);
     const QColor c = ann ? ann->color : QColor(255, 60, 60);
     m_editor->setStyleSheet(QString("QTextEdit { background: rgba(0,0,0,0); border: 1px dashed rgba(0,190,255,180); color: %1; }")

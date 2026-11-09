@@ -29,6 +29,7 @@ protected:
     void mouseMoveEvent(QMouseEvent* e) override;
     void mouseReleaseEvent(QMouseEvent* e) override;
     void keyPressEvent(QKeyEvent* e) override;
+    void wheelEvent(QWheelEvent* e) override;
     void showEvent(QShowEvent* e) override;
     void onSessionChanged();
     bool eventFilter(QObject* o, QEvent* e) override;
