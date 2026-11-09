@@ -531,6 +531,8 @@ int CaptureSession::handleAt(const QPoint& global) const {
     const Ann& a = m_anns[idx];
     if (a.locked)
         return NoHandle;
+    // 画笔/箭头是线条类，不给矩形对角框和 8 个缩放手柄，只保留确认/旋转/删除
+    const bool frameTools = a.tool == Rect || a.tool == Ellipse || a.tool == Mosaic || a.tool == Text;
     const QPointF c = rotCenter(a);
     const QPointF tl = rotatePoint(a.rect.topLeft(), c, a.rotation);
     const QPointF tr = rotatePoint(a.rect.topRight(), c, a.rotation);
@@ -557,6 +559,8 @@ int CaptureSession::handleAt(const QPoint& global) const {
         return Rotate;
     if (near(delPos))
         return Delete;
+    if (!frameTools)
+        return NoHandle;
     if (near(tl)) return TopLeft;
     if (near(tr)) return TopRight;
     if (near(bl)) return BottomLeft;
@@ -934,6 +938,7 @@ void CaptureSession::paintHandles(QPainter& p, QScreen* screen) const {
     const Ann& a = m_anns[idx];
     if (a.locked)
         return;
+    const bool frameTools = a.tool == Rect || a.tool == Ellipse || a.tool == Mosaic || a.tool == Text;
     const QPointF c = rotCenter(a);
     p.save();
     p.translate(-sr.topLeft());
@@ -944,7 +949,8 @@ void CaptureSession::paintHandles(QPainter& p, QScreen* screen) const {
     p.translate(c);
     p.rotate(a.rotation);
     p.translate(-c);
-    p.drawRect(a.rect);
+    if (frameTools)
+        p.drawRect(a.rect);
 
     const QPointF tl = a.rect.topLeft();
     const QPointF tr = a.rect.topRight();
@@ -957,8 +963,10 @@ void CaptureSession::paintHandles(QPainter& p, QScreen* screen) const {
     p.setBrush(Qt::white);
     p.setPen(QPen(QColor(0, 120, 200), 1));
     auto handle = [&](const QPointF& pt) { p.drawRect(QRectF(pt.x() - 4, pt.y() - 4, 8, 8)); };
-    handle(tl); handle(tr); handle(bl); handle(br);
-    handle(t); handle(b); handle(l); handle(r);
+    if (frameTools) {
+        handle(tl); handle(tr); handle(bl); handle(br);
+        handle(t); handle(b); handle(l); handle(r);
+    }
 
     // 旋转图标（右下角外侧）与确认勾（右上角外侧）
     const qreal rad = qDegreesToRadians(a.rotation);
