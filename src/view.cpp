@@ -119,6 +119,7 @@ static Qt::CursorShape handleCursor(int h) {
     case CaptureSession::Rotate:
         return Qt::PointingHandCursor;
     case CaptureSession::Check:
+    case CaptureSession::Delete:
         return Qt::PointingHandCursor;
     default:
         return Qt::ArrowCursor;
@@ -525,10 +526,11 @@ void OverlayView::mousePressEvent(QMouseEvent* e) {
 
     const int h = m_session->handleAt(g);
     if (h == CaptureSession::Check) {
-        if (m_session->editingText())
-            m_session->commitEditingText();
-        else
-            m_session->deselect();
+        m_session->commitSelected();
+        return;
+    }
+    if (h == CaptureSession::Delete) {
+        m_session->deleteSelected();
         return;
     }
     if (h == CaptureSession::Rotate) {

@@ -278,6 +278,8 @@ QRect CaptureSession::editingRect() const {
 const CaptureSession::Ann* CaptureSession::selectedAnn() const {
     if (m_selected < 0 || m_selected >= m_anns.size())
         return nullptr;
+    if (m_anns[m_selected].locked)
+        return nullptr;
     return &m_anns[m_selected];
 }
 
@@ -504,6 +506,8 @@ void CaptureSession::cancelEditingText() {
 int CaptureSession::annotationAt(const QPoint& global) const {
     for (int i = m_anns.size() - 1; i >= 0; --i) {
         const Ann& a = m_anns[i];
+        if (a.locked)
+            continue;
         const QPointF local = rotatePoint(global, rotCenter(a), -a.rotation);
         if (a.tool == Pen) {
             if (a.path.size() > 1) {
@@ -525,6 +529,8 @@ int CaptureSession::handleAt(const QPoint& global) const {
     if (idx < 0 || idx >= m_anns.size())
         return NoHandle;
     const Ann& a = m_anns[idx];
+    if (a.locked)
+        return NoHandle;
     const QPointF c = rotCenter(a);
     const QPointF tl = rotatePoint(a.rect.topLeft(), c, a.rotation);
     const QPointF tr = rotatePoint(a.rect.topRight(), c, a.rotation);
@@ -540,6 +546,7 @@ int CaptureSession::handleAt(const QPoint& global) const {
     const QPointF right(std::cos(rad), std::sin(rad));
     const QPointF checkPos = tr + up * 16.0 + right * 16.0;
     const QPointF rotPos = br + right * 22.0 + up * -22.0;
+    const QPointF delPos = bl - right * 18.0 + up * 18.0;
 
     auto near = [&](const QPointF& p) {
         return QLineF(global, p).length() < 16.0;
@@ -548,6 +555,8 @@ int CaptureSession::handleAt(const QPoint& global) const {
         return Check;
     if (near(rotPos))
         return Rotate;
+    if (near(delPos))
+        return Delete;
     if (near(tl)) return TopLeft;
     if (near(tr)) return TopRight;
     if (near(bl)) return BottomLeft;
@@ -633,11 +642,45 @@ void CaptureSession::undo() {
         cancelEditingText();
         return;
     }
-    if (!m_anns.isEmpty()) {
-        m_anns.removeLast();
+    for (int i = m_anns.size() - 1; i >= 0; --i) {
+        if (m_anns[i].locked)
+            continue;
+        m_anns.removeAt(i);
         m_selected = -1;
         emit changed();
+        break;
     }
+}
+
+void CaptureSession::commitSelected() {
+    if (editingText()) {
+        const int idx = m_editing;
+        const bool empty = m_anns[idx].text.trimmed().isEmpty();
+        commitEditingText();
+        if (empty || idx < 0 || idx >= m_anns.size())
+            return;
+        m_anns[idx].locked = true;
+        m_selected = -1;
+        emit changed();
+        return;
+    }
+    if (m_selected < 0 || m_selected >= m_anns.size())
+        return;
+    m_anns[m_selected].locked = true;
+    m_selected = -1;
+    m_editing = -1;
+    emit textEditingFinished();
+    emit changed();
+}
+
+void CaptureSession::deleteSelected() {
+    if (m_selected < 0 || m_selected >= m_anns.size())
+        return;
+    m_anns.removeAt(m_selected);
+    m_selected = -1;
+    m_editing = -1;
+    emit textEditingFinished();
+    emit changed();
 }
 
 void CaptureSession::setPicker(bool on) {
@@ -889,6 +932,8 @@ void CaptureSession::paintHandles(QPainter& p, QScreen* screen) const {
         return;
     const QRect sr = screenRect(screen);
     const Ann& a = m_anns[idx];
+    if (a.locked)
+        return;
     const QPointF c = rotCenter(a);
     p.save();
     p.translate(-sr.topLeft());
@@ -920,13 +965,20 @@ void CaptureSession::paintHandles(QPainter& p, QScreen* screen) const {
     const QPointF right(std::cos(rad), std::sin(rad));
     const QPointF up(-std::sin(rad), -std::cos(rad));
     const QPointF rot = br + right * 22.0 - up * 22.0;
-    const QPointF check = tr + right * 18.0 - up * 18.0;
+    const QPointF check = tr + right * 18.0 + up * 18.0;
+    const QPointF del = bl - right * 18.0 + up * 18.0;
     p.setPen(QPen(QColor(0, 200, 120), 2));
     p.drawEllipse(check, 9, 9);
     p.drawText(QRectF(check.x() - 8, check.y() - 8, 16, 16), Qt::AlignCenter, QStringLiteral("✓"));
     p.setPen(QPen(kFrame, 2));
     p.drawEllipse(rot, 9, 9);
     p.drawText(QRectF(rot.x() - 8, rot.y() - 8, 16, 16), Qt::AlignCenter, QStringLiteral("↻"));
+    p.setPen(QPen(QColor(255, 90, 90), 2));
+    p.setBrush(QColor(0, 0, 0, 130));
+    p.drawEllipse(del, 9, 9);
+    p.setPen(QPen(Qt::white, 2));
+    p.drawLine(del + QPointF(-4, -4), del + QPointF(4, 4));
+    p.drawLine(del + QPointF(-4, 4), del + QPointF(4, -4));
     p.restore();
 }
 

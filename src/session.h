@@ -26,7 +26,7 @@ public:
     enum Mode { Snip, Translate, Ocr };
     enum Tool { Move = 0, Rect, Ellipse, Arrow, Pen, Mosaic, Text };
     enum Handle { NoHandle, TopLeft, TopRight, BottomLeft, BottomRight,
-                  Top, Bottom, Left, Right, Rotate, Check };
+                  Top, Bottom, Left, Right, Rotate, Check, Delete };
 
     struct Ann {
         Tool tool = Rect;
@@ -37,6 +37,7 @@ public:
         qreal width = 3;
         QString text;
         qreal rotation = 0;   // 度
+        bool locked = false;  // 打勾确认后固化，不再参与选中/编辑
     };
 
     explicit CaptureSession(const QImage& fullImage, const QList<ScreenShot>& shots,
@@ -110,6 +111,8 @@ public:
     void selectAnn(int index);
     void deselect();
     void undo();
+    void commitSelected();   // 打勾：固化当前标注
+    void deleteSelected();   // 删除当前选中的标注
 
     QImage currentResult() const;   // 选区 + 标注
     QRect selectionRect() const { return selection(); }
